@@ -1,0 +1,44 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    printf '%s\n' \
+        'Usage : aegisadmin initialize|migrate|status|version|web-status'
+}
+
+run_admin_command() {
+    if [ "$(id -u)" -ne 0 ]; then
+        printf '%s\n' 'Cette commande doit être exécutée avec sudo.' >&2
+        exit 1
+    fi
+    exec /usr/libexec/aegisadmin/aegisadmin-admin "$1"
+}
+
+initialize_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        printf '%s\n' 'Cette commande doit être exécutée avec sudo.' >&2
+        exit 1
+    fi
+    web_was_active=false
+    if systemctl is-active --quiet aegisadmin-web.service; then
+        web_was_active=true
+        systemctl stop aegisadmin-web.service
+    fi
+    set +e
+    /usr/libexec/aegisadmin/aegisadmin-admin initialize-root
+    status=$?
+    set -e
+    if [ "${web_was_active}" = true ]; then
+        systemctl start aegisadmin-web.service
+    fi
+    return "${status}"
+}
+
+case "${1:-}" in
+    initialize) initialize_root ;;
+    migrate) run_admin_command migrate ;;
+    status) exec systemctl status aegisadmin-system.service ;;
+    web-status) exec systemctl status aegisadmin-web.service ;;
+    version) exec /usr/bin/aegisadmin-system-go --version ;;
+    *) usage >&2; exit 2 ;;
+esac

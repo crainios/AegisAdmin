@@ -1,0 +1,12 @@
+# Profil Apache. Les chemins doivent être absolus et le service est indiqué
+# sans le suffixe .service. Valeurs Debian par défaut ; exemple RHEL :
+# service=httpd, binary=/usr/sbin/httpd, config_root=/etc/httpd,
+# sites_available=/etc/httpd/conf.d et sites_enabled=/etc/httpd/conf.d.
+service=apache2
+binary=/usr/sbin/apache2
+control=/usr/sbin/apachectl
+config_root=/etc/apache2
+sites_available=/etc/apache2/sites-available
+sites_enabled=/etc/apache2/sites-enabled
+enable_command=/usr/sbin/a2ensite
+disable_command=/usr/sbin/a2dissite

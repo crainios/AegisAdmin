@@ -1,0 +1,3 @@
+php8.4-fpm.service disabled enabled
+php8.5-fpm.service enabled enabled
+unrelated.service enabled enabled

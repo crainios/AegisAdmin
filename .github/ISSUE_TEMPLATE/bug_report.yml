@@ -1,0 +1,42 @@
+name: Signaler une anomalie
+description: Signaler un comportement reproductible sans donnée sensible
+title: "[Anomalie] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Pour une vulnérabilité, n'utilisez pas ce formulaire. Consultez SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version d'AegisAdmin
+      placeholder: 0.2.22
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Système
+      placeholder: Ubuntu 26.04 amd64
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Étapes de reproduction
+      description: N'incluez aucun secret ni journal complet.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Résultat attendu
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Résultat observé
+    validations:
+      required: true
+

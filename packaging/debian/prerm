@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = remove ]; then
+    systemctl disable --now aegisadmin-system.service >/dev/null 2>&1 || true
+    systemctl disable --now aegisadmin-web.service >/dev/null 2>&1 || true
+    a2dissite aegisadmin-admin.conf >/dev/null 2>&1 || true
+    systemctl reload apache2 >/dev/null 2>&1 || true
+fi
+
+exit 0

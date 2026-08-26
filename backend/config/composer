@@ -1,0 +1,8 @@
+# Surveillance Composer locale. Ce fichier est conservé lors des mises à jour.
+enabled=true
+interval=6h
+composer=auto
+apache_control=auto
+roots=/var/www,/srv/www
+max_parents=6
+root_project_user=auto

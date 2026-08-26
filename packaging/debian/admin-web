@@ -1,0 +1,5 @@
+enabled=true
+app_root=/usr/share/aegisadmin/web
+address=*
+port=8443
+allow_from=all

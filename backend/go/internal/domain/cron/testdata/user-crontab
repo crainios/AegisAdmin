@@ -1,0 +1,5 @@
+MAILTO=admin@example.invalid
+5 4 * * * /usr/local/bin/backup --full
+# AEGISADMIN-TASK: 123e4567-e89b-42d3-a456-426614174000 ACTIVE
+*/10 * * * * /usr/local/bin/managed  two-spaces
+# AEGISADMIN-TASK: 123e4567-e89b-42d3-a456-426614174001 SUSPENDED QGRhaWx5IC91c3IvbG9jYWwvYmluL3N1c3BlbmRlZA

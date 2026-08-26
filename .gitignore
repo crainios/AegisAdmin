@@ -1,0 +1,48 @@
+# Livraisons et paquets générés
+/dist/*
+!/dist/.gitignore
+*.deb
+*.tar.gz
+*.tar.xz
+*.zip
+
+# Résultats de construction et de tests
+/build/
+/coverage/
+*.cover
+*.out
+*.test
+__pycache__/
+*.py[cod]
+
+# Données d'exécution locales
+/storage/database/*
+!/storage/database/.gitignore
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# Secrets et certificats locaux
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.csr
+*.crt
+credentials*
+secrets*
+
+# Fichiers temporaires et éditeurs
+*~
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+/.agents/
+/.codex/

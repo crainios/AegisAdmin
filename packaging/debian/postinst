@@ -1,0 +1,120 @@
+#!/bin/sh
+set -eu
+
+case "${1:-configure}" in
+    configure)
+        database_was_present=false
+        [ -s /var/lib/aegisadmin/database/aegisadmin.sqlite ] && database_was_present=true
+        for command in getent adduser addgroup install openssl runuser a2enmod a2ensite a2dissite apachectl systemctl; do
+            if ! command -v "${command}" >/dev/null 2>&1; then
+                printf 'Commande indispensable absente : %s\n' "${command}" >&2
+                exit 1
+            fi
+        done
+        if ! getent passwd aegisadmin >/dev/null; then
+            adduser --system --group --home /var/lib/aegisadmin \
+                --no-create-home aegisadmin >/dev/null
+        fi
+        if ! getent group aegisadmin-web >/dev/null; then
+            addgroup --system aegisadmin-web >/dev/null
+        fi
+        adduser aegisadmin aegisadmin-web >/dev/null 2>&1 || true
+        install -d -o aegisadmin -g aegisadmin-web -m 2770 \
+            /var/lib/aegisadmin/database \
+            /var/lib/aegisadmin/database/backups
+        install -d -o root -g root -m 0750 \
+            /var/lib/aegisadmin/configuration/snapshots
+        install -d -o root -g aegisadmin-web -m 0750 \
+            /etc/aegisadmin-system
+        install -d -o root -g aegisadmin-web -m 0750 \
+            /etc/aegisadmin-system/tls
+        if [ ! -e /etc/aegisadmin-system/admin-web ]; then
+            install -o root -g aegisadmin-web -m 0640 \
+                /usr/share/aegisadmin/defaults/admin-web \
+                /etc/aegisadmin-system/admin-web
+        fi
+        if [ ! -e /etc/apache2/sites-available/aegisadmin-admin.conf ]; then
+            install -o root -g root -m 0644 \
+                /usr/share/aegisadmin/defaults/aegisadmin-admin.conf \
+                /etc/apache2/sites-available/aegisadmin-admin.conf
+        fi
+
+        if [ -L /etc/aegisadmin-system/tls/admin-local.key ] || \
+           [ -L /etc/aegisadmin-system/tls/admin-local.crt ]; then
+            printf '%s\n' 'Les fichiers TLS locaux ne doivent pas être des liens symboliques.' >&2
+            exit 1
+        fi
+        certificate_present=false
+        key_present=false
+        [ -s /etc/aegisadmin-system/tls/admin-local.crt ] && certificate_present=true
+        [ -s /etc/aegisadmin-system/tls/admin-local.key ] && key_present=true
+        if [ "${certificate_present}" != "${key_present}" ]; then
+            printf '%s\n' \
+                'La paire TLS locale est incomplète. Aucun fichier existant n’a été remplacé.' \
+                'Restaurez le certificat ou la clé manquante, puis relancez la configuration du paquet.' >&2
+            exit 1
+        fi
+        if [ "${certificate_present}" = false ]; then
+            openssl req -x509 -newkey rsa:3072 -sha256 -days 825 -nodes \
+                -subj '/CN=AegisAdmin local administration' \
+                -addext 'subjectAltName=DNS:localhost,DNS:aegisadmin.local' \
+                -keyout /etc/aegisadmin-system/tls/admin-local.key \
+                -out /etc/aegisadmin-system/tls/admin-local.crt >/dev/null 2>&1
+        fi
+        chown root:aegisadmin-web /etc/aegisadmin-system/tls/admin-local.crt
+        chown aegisadmin:aegisadmin-web /etc/aegisadmin-system/tls/admin-local.key
+        chmod 0440 /etc/aegisadmin-system/tls/admin-local.key
+        chmod 0644 /etc/aegisadmin-system/tls/admin-local.crt
+        if ! runuser -u aegisadmin -g aegisadmin-web -- test -r /etc/aegisadmin-system/tls/admin-local.crt || \
+           ! runuser -u aegisadmin -g aegisadmin-web -- test -r /etc/aegisadmin-system/tls/admin-local.key; then
+            printf '%s\n' 'Le service web ne peut pas lire ses fichiers TLS.' >&2
+            exit 1
+        fi
+
+		site_was_enabled=false
+		[ -L /etc/apache2/sites-enabled/aegisadmin-admin.conf ] && site_was_enabled=true
+		a2enmod ssl headers proxy proxy_http >/dev/null
+		a2ensite aegisadmin-admin.conf >/dev/null
+		if ! apachectl configtest; then
+			if [ "${site_was_enabled}" = false ]; then
+				a2dissite aegisadmin-admin.conf >/dev/null 2>&1 || true
+			fi
+			printf '%s\n' \
+				'Le contrôle global de la configuration Apache a échoué.' \
+				'La situation d’activation antérieure du site AegisAdmin a été conservée ; corrigez Apache puis relancez la configuration du paquet.' >&2
+			exit 1
+		fi
+
+        systemctl daemon-reload
+        systemctl enable aegisadmin-system.service >/dev/null
+        systemctl enable aegisadmin-web.service >/dev/null
+        systemctl restart aegisadmin-system.service
+		/usr/bin/aegisadmin-system-go admin-access reconcile-package >/dev/null
+
+		/usr/libexec/aegisadmin/aegisadmin-admin migrate
+		find /var/lib/aegisadmin/database -maxdepth 1 -type f \
+			\( -name '*.sqlite' -o -name '*.sqlite-wal' -o -name '*.sqlite-shm' \) \
+			-exec chown aegisadmin:aegisadmin-web {} + \
+			-exec chmod 0660 {} +
+		systemctl restart aegisadmin-web.service
+		systemctl restart apache2
+		sleep 1
+		for service in aegisadmin-system.service aegisadmin-web.service apache2.service; do
+			if ! systemctl is-active --quiet "${service}"; then
+				printf 'Le service %s n’est pas resté actif après son redémarrage.\n' "${service}" >&2
+				exit 1
+			fi
+		done
+		if ! runuser -u aegisadmin -g aegisadmin-web -- test -x /usr/libexec/aegisadmin/aegisadmin-web; then
+			printf '%s\n' 'Le compte aegisadmin ne peut pas exécuter le serveur web installé.' >&2
+			exit 1
+		fi
+
+		printf '%s\n' 'AegisAdmin Go est installé et les services ont été redémarrés.'
+		if [ "${database_was_present}" = false ]; then
+			printf '%s\n' 'Pour une première installation, initialisez le compte administrateur avec : sudo aegisadmin initialize'
+		fi
+        ;;
+esac
+
+exit 0

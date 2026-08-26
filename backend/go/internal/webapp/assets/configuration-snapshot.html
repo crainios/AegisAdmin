@@ -1,0 +1,6 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Snapshot — AegisAdmin</title><link rel="stylesheet" href="/assets/app.css?v={{VERSION}}"></head><body class="dashboard-body"><main class="dashboard-shell">
+<header class="dashboard-header"><div><p class="eyebrow">Configuration serveur</p><h1>Détail du snapshot</h1><p class="muted">{{CREATED}}</p></div><div class="header-actions"><a class="secondary-link" href="/configuration">Retour aux snapshots</a><a class="primary-button" href="/configuration/snapshots/{{ID}}/export">Exporter le JSON</a></div></header>
+<section class="content-card"><h2>Informations</h2><dl class="detail-list"><div><dt>Identifiant</dt><dd><code>{{ID}}</code></dd></div><div><dt>Schéma</dt><dd>{{SCHEMA}}</dd></div><div><dt>Empreinte SHA-256</dt><dd><code class="snapshot-fingerprint">{{FINGERPRINT}}</code></dd></div></dl></section>
+<div class="snapshot-sections">{{SECTIONS}}</div>
+<details class="content-card snapshot-raw"><summary>Afficher le JSON brut</summary><pre>{{RAW}}</pre></details>
+</main></body></html>

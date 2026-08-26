@@ -1,0 +1,7 @@
+[
+  {"ifname":"bond0","link_type":"ether","operstate":"UP","linkinfo":{"info_kind":"bond"}},
+  {"ifname":"vlan10","link_type":"ether","operstate":"UP","linkinfo":{"info_kind":"vlan"}},
+  {"ifname":"wg0","link_type":"none","operstate":"UP","linkinfo":{"info_kind":"wireguard"}},
+  {"ifname":"tun0","link_type":"none","operstate":"UP","linkinfo":{"info_kind":"tuntap","info_data":{"mode":"tun"}}},
+  {"ifname":"tap0","link_type":"none","operstate":"UP","linkinfo":{"info_kind":"tap"}}
+]

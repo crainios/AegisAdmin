@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+systemctl daemon-reload >/dev/null 2>&1 || true
+
+if [ "${1:-}" = purge ]; then
+    rm -f /etc/aegisadmin-system/tls/admin-local.crt \
+        /etc/aegisadmin-system/tls/admin-local.key \
+        /etc/aegisadmin-system/admin-web \
+        /etc/apache2/sites-available/aegisadmin-admin.conf
+fi
+
+# /var/lib/aegisadmin est volontairement conservé, y compris après purge.
+exit 0

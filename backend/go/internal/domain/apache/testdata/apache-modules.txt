@@ -1,0 +1,4 @@
+Loaded Modules:
+ core_module (static)
+ ssl_module (shared)
+ rewrite_module (shared)

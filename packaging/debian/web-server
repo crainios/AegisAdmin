@@ -1,0 +1,2 @@
+# Adresse HTTPS du serveur web Go AegisAdmin.
+AEGISADMIN_WEB_LISTEN=127.0.0.1:9080

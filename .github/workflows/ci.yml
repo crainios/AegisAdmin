@@ -1,0 +1,40 @@
+name: Contrôles
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sources-et-paquet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer les sources
+        uses: actions/checkout@v7
+
+      - name: Installer Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go/go.mod
+          cache-dependency-path: backend/go/go.sum
+
+      - name: Installer les outils Debian
+        run: sudo apt-get update && sudo apt-get install -y rsync
+
+      - name: Vérifier le format Go
+        working-directory: backend/go
+        run: test -z "$(gofmt -l .)"
+
+      - name: Tester les sources Go
+        working-directory: backend/go
+        run: go test ./...
+
+      - name: Analyser les sources Go
+        working-directory: backend/go
+        run: go vet ./...
+
+      - name: Construire et contrôler le paquet Debian
+        run: bash packaging/build-deb.sh

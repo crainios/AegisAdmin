@@ -1,0 +1,15 @@
+# Services systemd autorisés à être supervisés et redémarrés.
+# Indiquer le nom sans le suffixe .service, un service par ligne.
+# Les unités PHP de forme phpX.Y-fpm sont découvertes automatiquement.
+apache2
+httpd
+mysql
+mariadb
+mysqld
+fail2ban
+tor
+tor@default
+cron
+crond
+ssh
+sshd

@@ -1,0 +1,1 @@
+%aegisadmin-web ALL=(root) NOPASSWD: /usr/bin/aegisadmin-system-go

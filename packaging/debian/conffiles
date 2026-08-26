@@ -1,0 +1,11 @@
+/etc/aegisadmin-system/apache
+/etc/aegisadmin-system/web-server
+/etc/aegisadmin-system/composer
+/etc/aegisadmin-system/cron
+/etc/aegisadmin-system/cron-users
+/etc/aegisadmin-system/cron-users-deny
+/etc/aegisadmin-system/fail2ban
+/etc/aegisadmin-system/logs
+/etc/aegisadmin-system/services
+/etc/aegisadmin-system/storage
+/etc/aegisadmin-system/tor

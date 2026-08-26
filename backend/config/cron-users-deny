@@ -1,0 +1,3 @@
+# Comptes à exclure de la gestion Cron dans AegisAdmin.
+# Cette liste est prioritaire sur la découverte automatique et cron-users.
+

@@ -1,0 +1,25 @@
+{
+  "Devices": [
+    {
+      "Name": "System Firmware",
+      "Vendor": "Example",
+      "Version": "1.0",
+      "Flags": ["needs-reboot"],
+      "Releases": [
+        {"Version": "0.9", "Flags": ["is-downgrade"]},
+        {
+          "Version": "1.1",
+          "Name": "Firmware 1.1",
+          "Summary": "Security update",
+          "RemoteId": "lvfs",
+          "Flags": ["is-upgrade"],
+          "Issues": ["CVE-2026-0001", "CVE-2026-0001", ""]
+        }
+      ]
+    },
+    {
+      "Name": "Unchanged device",
+      "Releases": [{"Version": "1.0", "Flags": []}]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+# Journaux lisibles par AegisAdmin. Seuls les chemins situés sous /var/log
+# sont acceptés. Formats : directory=/chemin ou file=/chemin.
+directory=/var/log/apache2
+directory=/var/log/httpd
+directory=/var/log/mysql
+directory=/var/log/mariadb
+directory=/var/log/php
+directory=/var/log/nginx
+file=/var/log/fail2ban.log

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Paramètres — AegisAdmin</title>
+<link rel="stylesheet" href="/assets/app.css?v={{VERSION}}">
+</head>
+<body class="dashboard-body">
+<main class="dashboard-shell">
+<header class="dashboard-header">
+<div>
+<p class="eyebrow">AegisAdmin</p>
+<h1>Paramètres</h1>
+<p class="muted">Préférences applicatives et accès d’administration</p>
+</div>
+<div class="header-actions">
+<a class="secondary-link" href="/go/dashboard">Tableau de bord</a>
+<form method="post" action="/logout">
+<input type="hidden" name="_token" value="{{CSRF}}">
+<button class="secondary-button">Se déconnecter</button>
+</form>
+</div>
+</header>{{NOTICE}}<section class="content-card">
+<h2>Préférences</h2>
+<form class="selector-form" method="post" action="/setting">
+<input type="hidden" name="_token" value="{{CSRF}}">
+<label>Journal ouvert par défaut</label>
+{{LOG_SOURCES}}
+<label>Adresse e-mail utilisée par défaut pour les certificats</label>
+<input type="email" name="certbot_email" maxlength="254" value="{{CERTBOT_EMAIL}}">
+<button class="primary-button">Enregistrer</button>
+</form>
+</section>
+<section class="content-card">
+<h2>Accès HTTPS dédié</h2>{{ADMIN_MESSAGE}}<form class="selector-form" method="post" action="/setting/admin-access">
+<input type="hidden" name="_token" value="{{CSRF}}">
+<label>
+<input type="checkbox" name="enabled" value="1" {{ADMIN_ENABLED}}> Accès activé</label>
+<label>Adresses d’écoute</label>
+<textarea name="address" maxlength="768" required>{{ADMIN_ADDRESS}}</textarea>
+<label>Port</label>
+<input type="number" name="port" min="1024" max="65535" value="{{ADMIN_PORT}}" required>
+<label>IP ou réseau autorisé</label>
+<input name="allow_from" maxlength="64" value="{{ADMIN_ALLOW}}" required>
+<button class="danger-button">Appliquer et recharger Apache</button>
+</form>
+</section>
+<section class="content-card">
+<h2>Sauvegarde SQLite</h2>
+<form method="post" action="/setting/database/backup"><input type="hidden" name="_token" value="{{CSRF}}"><button class="secondary-button">Télécharger une sauvegarde cohérente</button></form>
+<h3>Restaurer</h3>
+<form class="selector-form" method="post" action="/setting/database/restore" enctype="multipart/form-data"><input type="hidden" name="_token" value="{{CSRF}}"><input type="file" name="database" accept=".sqlite,application/vnd.sqlite3" required><label><input type="checkbox" name="confirmation" value="restore" required> Je confirme le remplacement de la base active</label><button class="danger-button">Restaurer la sauvegarde</button></form>
+</section>
+</main>
+</body>
+</html>

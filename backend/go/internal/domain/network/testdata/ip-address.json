@@ -1,0 +1,32 @@
+[
+  {
+    "ifname": "eth0",
+    "link_type": "ether",
+    "operstate": "UP",
+    "address": "02:42:ac:11:00:02",
+    "mtu": 1500,
+    "addr_info": [
+      {"family": "inet6", "local": "fe80::42:acff:fe11:2", "prefixlen": 64},
+      {"family": "inet", "local": "192.0.2.20", "prefixlen": 24},
+      {"family": "inet", "local": "192.0.2.10", "prefixlen": 24}
+    ]
+  },
+  {
+    "ifname": "lo",
+    "link_type": "loopback",
+    "operstate": "UNKNOWN",
+    "address": "00:00:00:00:00:00",
+    "mtu": 65536,
+    "addr_info": [
+      {"family": "inet", "local": "127.0.0.1", "prefixlen": 8},
+      {"family": "inet6", "local": "::1", "prefixlen": 128}
+    ]
+  },
+  {
+    "ifname": "br0",
+    "link_type": "ether",
+    "operstate": "DOWN",
+    "linkinfo": {"info_kind": "bridge"},
+    "addr_info": []
+  }
+]

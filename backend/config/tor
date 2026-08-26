@@ -1,0 +1,6 @@
+# Profil Tor local. Ce fichier est conservé lors des mises à jour.
+binary=/usr/sbin/tor
+config=/etc/tor/torrc
+defaults=/usr/share/tor/tor-service-defaults-torrc
+unit=tor@default.service
+data_directory=/var/lib/tor

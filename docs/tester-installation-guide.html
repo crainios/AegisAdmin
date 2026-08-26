@@ -1,0 +1,229 @@
+<article class="aegisadmin-installation-guide">
+  <p><strong>Ce guide explique comment installer AegisAdmin depuis son dépôt APT officiel et effectuer les premiers contrôles sur une machine de test.</strong></p>
+
+  <section>
+    <h2>Avant de commencer</h2>
+    <p><strong>AegisAdmin administre des composants sensibles du serveur.</strong> Pour un premier essai, utilisez une machine virtuelle ou un serveur de test disposant d’une sauvegarde restaurable et conservez un accès SSH indépendant.</p>
+    <ul>
+      <li>Ne commencez pas sur un serveur de production.</li>
+      <li>Utilisez un compte autorisé à employer <code>sudo</code>.</li>
+      <li>Conservez un snapshot ou une sauvegarde récente de la machine.</li>
+      <li>Ne désactivez jamais les contrôles de signature APT.</li>
+      <li>N’installez pas une clé dont l’empreinte diffère de celle publiée ci-dessous.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>1. Vérifier la machine</h2>
+    <p>La livraison actuellement publiée est destinée aux systèmes Debian ou Ubuntu utilisant systemd, APT et l’architecture <code>amd64</code>.</p>
+    <pre><code>dpkg --print-architecture
+ps -p 1 -o comm=</code></pre>
+    <p>Résultats attendus :</p>
+    <pre><code>amd64
+systemd</code></pre>
+    <p>Installez les outils nécessaires au téléchargement et au contrôle de la clé :</p>
+    <pre><code>sudo apt update
+sudo apt install ca-certificates gnupg wget</code></pre>
+  </section>
+
+  <section>
+    <h2>2. Télécharger la clé publique officielle</h2>
+    <p>Téléchargez d’abord la clé dans un fichier temporaire, sans l’installer :</p>
+    <pre><code>wget --https-only \
+    --output-document=/tmp/aegisadmin-archive-keyring.gpg \
+    https://packages.aegisadmin.fr/aegisadmin-archive-keyring.gpg</code></pre>
+    <p>Affichez son identité et ses empreintes :</p>
+    <pre><code>gpg --show-keys --with-fingerprint \
+    /tmp/aegisadmin-archive-keyring.gpg</code></pre>
+    <p>Identité attendue :</p>
+    <pre><code>AegisAdmin Archive &lt;packages@aegisadmin.fr&gt;</code></pre>
+    <p>Empreinte officielle de la clé principale :</p>
+    <pre><code>D01E 7409 36E2 CB6E 7BA8  76F9 C103 5511 5D7F 97DB</code></pre>
+    <p>Sous-clé de signature initiale :</p>
+    <pre><code>591B 7C62 F74D 090D 3B2C  E8EF CA15 4A9B 3734 C7A1</code></pre>
+    <p>Vous pouvez obtenir l’empreinte principale sous une forme sans espaces :</p>
+    <pre><code>gpg --show-keys --with-colons --fingerprint \
+    /tmp/aegisadmin-archive-keyring.gpg \
+    | awk -F: '$1 == "fpr" { print $10; exit }'</code></pre>
+    <p>La commande doit afficher exactement :</p>
+    <pre><code>D01E740936E2CB6E7BA876F9C10355115D7F97DB</code></pre>
+    <p><strong>Arrêtez immédiatement l’installation si l’empreinte diffère.</strong></p>
+  </section>
+
+  <section>
+    <h2>3. Installer la clé et configurer le dépôt APT</h2>
+    <p>Installez la clé publique dans le trousseau réservé à AegisAdmin :</p>
+    <pre><code>sudo install -o root -g root -m 0644 \
+    /tmp/aegisadmin-archive-keyring.gpg \
+    /usr/share/keyrings/aegisadmin-archive-keyring.gpg</code></pre>
+    <p>Téléchargez la déclaration du dépôt et examinez-la :</p>
+    <pre><code>wget --https-only \
+    --output-document=/tmp/aegisadmin.sources \
+    https://packages.aegisadmin.fr/aegisadmin.sources
+
+cat /tmp/aegisadmin.sources</code></pre>
+    <p>Contenu attendu :</p>
+    <pre><code>Types: deb
+URIs: https://packages.aegisadmin.fr
+Suites: stable
+Components: main
+Architectures: amd64
+Signed-By: /usr/share/keyrings/aegisadmin-archive-keyring.gpg</code></pre>
+    <p>Installez ensuite cette déclaration :</p>
+    <pre><code>sudo install -o root -g root -m 0644 \
+    /tmp/aegisadmin.sources \
+    /etc/apt/sources.list.d/aegisadmin.sources</code></pre>
+    <p>La directive <code>Signed-By</code> limite la confiance accordée à cette clé au seul dépôt AegisAdmin. N’utilisez pas <code>apt-key</code>, <code>trusted=yes</code> ou une option permettant d’ignorer une erreur de signature.</p>
+  </section>
+
+  <section>
+    <h2>4. Contrôler le paquet proposé</h2>
+    <p>Actualisez les index puis vérifiez l’origine et la version candidate :</p>
+    <pre><code>sudo apt update
+apt policy aegisadmin</code></pre>
+    <p>La version candidate doit provenir de :</p>
+    <pre><code>https://packages.aegisadmin.fr stable/main amd64 Packages</code></pre>
+    <p>APT vérifie successivement la signature du fichier <code>InRelease</code>, les sommes des index et la somme du paquet téléchargé. Une erreur de signature, de date de validité ou de somme doit interrompre l’installation.</p>
+    <p>Pour télécharger le paquet sans l’installer et consulter ses informations :</p>
+    <pre><code>cd /tmp
+apt download aegisadmin
+dpkg-deb --info aegisadmin_*_amd64.deb</code></pre>
+    <p>Le champ <code>Package</code> doit valoir <code>aegisadmin</code>, l’architecture <code>amd64</code> et le responsable <code>AegisAdmin &lt;packages@aegisadmin.fr&gt;</code>.</p>
+  </section>
+
+  <section>
+    <h2>5. Installer AegisAdmin</h2>
+    <p>Lancez l’installation depuis le dépôt signé :</p>
+    <pre><code>sudo apt install aegisadmin</code></pre>
+    <p>Le paquet installe notamment :</p>
+    <ul>
+      <li>le serveur web Go non privilégié ;</li>
+      <li>le backend système Go privilégié ;</li>
+      <li>les services systemd correspondants ;</li>
+      <li>un accès Apache HTTPS de secours sur le port <code>8443</code> ;</li>
+      <li>une paire TLS locale et une base SQLite ;</li>
+      <li>les migrations et les outils d’administration.</li>
+    </ul>
+    <p>La fin de l’installation doit indiquer que les services ont été redémarrés. En cas d’erreur, consultez la section de diagnostic avant de relancer l’installation.</p>
+  </section>
+
+  <section>
+    <h2>6. Initialiser le compte administrateur</h2>
+    <p>Cette opération est nécessaire uniquement lors d’une installation réellement neuve :</p>
+    <pre><code>sudo aegisadmin initialize</code></pre>
+    <p>L’outil demande le prénom, le nom, l’adresse e-mail, puis le mot de passe et sa confirmation. Le mot de passe doit contenir entre 12 et 72 caractères. Sa saisie est matérialisée par des caractères <code>#</code>.</p>
+    <p>L’identifiant de connexion est toujours :</p>
+    <pre><code>root</code></pre>
+    <p>Le prénom, le nom et l’adresse e-mail ne remplacent pas cet identifiant. Ne relancez pas l’initialisation si l’outil indique que le compte root existe déjà.</p>
+  </section>
+
+  <section>
+    <h2>7. Contrôler le fonctionnement</h2>
+    <pre><code>sudo systemctl status \
+    aegisadmin-system.service \
+    aegisadmin-web.service \
+    apache2.service \
+    --no-pager -l
+
+sudo aegisadmin version
+
+wget --no-check-certificate --quiet --output-document=- \
+    https://127.0.0.1:9080/readyz</code></pre>
+    <p>Les trois services doivent être actifs. La sonde doit renvoyer une réponse de cette forme :</p>
+    <pre><code>{"status":"ok","version":"VERSION","backend":"ok","database":"ok"}</code></pre>
+    <p>Le port <code>9080</code> correspond à l’écoute locale du serveur Go. Il n’est pas destiné à être ouvert directement sur Internet.</p>
+  </section>
+
+  <section>
+    <h2>8. Ouvrir l’interface pour la première fois</h2>
+    <p>Le paquet fournit un accès Apache HTTPS de secours :</p>
+    <pre><code>https://ADRESSE_IP_DU_SERVEUR:8443/</code></pre>
+    <p>Vérifiez que le serveur écoute sur ce port :</p>
+    <pre><code>sudo ss -ltnp | grep ':8443'</code></pre>
+    <p>Le pare-feu n’est pas modifié automatiquement. Si le port est filtré, autorisez uniquement l’adresse ou le réseau de test selon l’outil de pare-feu déjà utilisé sur la machine.</p>
+    <p>Le certificat initial est local et n’est pas signé par une autorité publique. Le navigateur affiche donc normalement un avertissement. Avant de l’accepter, affichez son empreinte directement sur le serveur :</p>
+    <pre><code>sudo openssl x509 \
+    -in /etc/aegisadmin-system/tls/admin-local.crt \
+    -noout -sha256 -fingerprint</code></pre>
+    <p>Comparez cette empreinte avec celle présentée par le navigateur, puis connectez-vous avec l’identifiant <code>root</code> et le mot de passe défini précédemment.</p>
+  </section>
+
+  <section>
+    <h2>9. Premières vérifications conseillées</h2>
+    <p>Commencez par des opérations de consultation :</p>
+    <ol>
+      <li>vérifier le tableau de bord et le rafraîchissement des ressources ;</li>
+      <li>ouvrir Processus, Stockage, Services, Réseau et Journaux ;</li>
+      <li>contrôler Apache, Fail2ban, Pare-feu, Cron et Certificats TLS ;</li>
+      <li>vérifier Mises à jour, Utilisateurs, Modules, Paramètres et Config. serveur ;</li>
+      <li>tester les trois thèmes et une largeur d’écran réduite ;</li>
+      <li>créer une sauvegarde depuis <strong>Paramètres &gt; Sauvegarde de la base</strong>.</li>
+    </ol>
+    <p>Ne testez les actions de modification qu’après avoir créé une sauvegarde ou un snapshot de la machine.</p>
+  </section>
+
+  <section>
+    <h2>10. Installer les versions suivantes</h2>
+    <pre><code>sudo apt update
+apt policy aegisadmin
+sudo apt install aegisadmin</code></pre>
+    <p>La base, les sauvegardes, les snapshots, les configurations locales et la paire TLS sont conservés pendant une mise à niveau normale.</p>
+  </section>
+
+  <section>
+    <h2>11. Diagnostic rapide</h2>
+    <p>Si l’interface ne répond pas :</p>
+    <pre><code>sudo journalctl -u aegisadmin-system.service -n 100 --no-pager -l
+sudo journalctl -u aegisadmin-web.service -n 100 --no-pager -l
+sudo journalctl -u apache2.service -n 100 --no-pager -l
+sudo apache2ctl configtest
+sudo ss -ltnp | grep -E ':8443|:9080'</code></pre>
+    <p>Contrôlez dans cet ordre :</p>
+    <ol>
+      <li><code>aegisadmin-system.service</code> ;</li>
+      <li>le socket <code>/run/aegisadmin-system/backend.sock</code> ;</li>
+      <li><code>aegisadmin-web.service</code> ;</li>
+      <li>la sonde locale sur le port <code>9080</code> ;</li>
+      <li>Apache et l’accès sur le port <code>8443</code> ;</li>
+      <li>le pare-feu et le routage réseau.</li>
+    </ol>
+    <p>Ne démarrez jamais manuellement le serveur web AegisAdmin en root.</p>
+  </section>
+
+  <section>
+    <h2>12. Récupérer le compte root</h2>
+    <p>Pour remplacer le mot de passe root :</p>
+    <pre><code>sudo /usr/libexec/aegisadmin/aegisadmin-admin reset-root-password
+sudo systemctl restart aegisadmin-web.service</code></pre>
+    <p>Pour désactiver sa double authentification après la perte du générateur TOTP :</p>
+    <pre><code>sudo /usr/libexec/aegisadmin/aegisadmin-admin disable-root-two-factor
+sudo systemctl restart aegisadmin-web.service</code></pre>
+    <p>Ces opérations invalident les sessions root existantes.</p>
+  </section>
+
+  <section>
+    <h2>13. Désinstaller AegisAdmin d’une machine de test</h2>
+    <p>La suppression du paquet conserve volontairement les données :</p>
+    <pre><code>sudo apt remove aegisadmin</code></pre>
+    <p>La purge retire également les configurations Debian et la paire TLS locale, mais conserve la base, ses sauvegardes et les snapshots :</p>
+    <pre><code>sudo apt purge aegisadmin</code></pre>
+    <p>Ne supprimez manuellement les données restantes qu’après avoir vérifié leur sauvegarde et uniquement sur une machine dont la destruction est autorisée.</p>
+  </section>
+
+  <section>
+    <h2>14. Signaler un problème</h2>
+    <p>Sans transmettre de mot de passe, de clé privée, de secret TOTP ou de donnée personnelle, joignez les informations suivantes :</p>
+    <pre><code>cat /etc/os-release
+uname -a
+dpkg --print-architecture
+sudo aegisadmin version
+apt policy aegisadmin</code></pre>
+    <p>Indiquez également les étapes permettant de reproduire le problème, le résultat attendu, le résultat observé et uniquement les extraits de journaux nécessaires.</p>
+  </section>
+
+  <footer>
+    <p>Site officiel : <a href="https://aegisadmin.fr/">aegisadmin.fr</a><br>
+    Dépôt de paquets : <a href="https://packages.aegisadmin.fr/">packages.aegisadmin.fr</a><br>
+    Code source : <a href="https://github.com/crainios/AegisAdmin" rel="noopener noreferrer">GitHub</a></p>
+  </footer>
+</article>

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tableau de bord — AegisAdmin</title>
+    <link rel="stylesheet" href="/assets/app.css?v={{VERSION}}">
+</head>
+<body class="dashboard-body">
+    <main class="dashboard-shell">
+        <header class="dashboard-header">
+            <div>
+                <p class="eyebrow">AegisAdmin</p>
+                <h1>Tableau de bord</h1>
+                <p class="muted">Session de <strong>{{USER}}</strong> · Version {{VERSION}}</p>
+            </div>
+            <form method="post" action="/logout">
+                <input type="hidden" name="_token" value="{{CSRF}}">
+                <button class="secondary-button" type="submit">Se déconnecter</button>
+            </form>
+        </header>
+        <section class="server-summary">
+            <div>
+                <span class="summary-label">Serveur</span>
+                <h2>{{HOSTNAME}}</h2>
+                <p>{{SYSTEM}}</p>
+            </div>
+            <dl>
+                <div><dt>Noyau</dt><dd>{{KERNEL}}</dd></div>
+                <div><dt>Disponibilité</dt><dd>{{UPTIME}}</dd></div>
+            </dl>
+        </section>
+        <section class="dashboard-section" aria-labelledby="system-information-title">
+            <h2 id="system-information-title">Informations système</h2>
+            <p class="muted">Identification et environnement logiciel du serveur.</p>
+            <article class="content-card">{{SYSTEM_INFORMATION}}</article>
+        </section>
+        <section class="dashboard-section" aria-labelledby="resources-title" data-dashboard-resources data-dashboard-resources-url="/go/dashboard/resources" data-dashboard-resources-interval="2000">
+            <h2 id="resources-title">Ressources système</h2>
+            <p class="muted">Utilisation actuelle du processeur, de la mémoire, de la température et des processus.</p>
+            <div class="overview-grid">{{RESOURCES}}</div>
+        </section>
+        <section class="dashboard-section" aria-labelledby="supervision-title" data-dashboard-supervision data-dashboard-supervision-url="/go/dashboard/supervision" data-dashboard-supervision-interval="15000">
+            <h2 id="supervision-title">Supervision</h2>
+            <p class="muted">Synthèse du stockage, des services et du réseau.</p>
+            <div class="overview-grid">{{SUPERVISION}}</div>
+        </section>
+    </main>
+</body>
+</html>

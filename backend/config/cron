@@ -1,0 +1,9 @@
+# Profil Cron local. Les valeurs auto suivent la famille de distribution.
+package=auto
+unit=auto
+crontab=/usr/bin/crontab
+spool_directory=auto
+system_crontab=/etc/crontab
+cron_directory=/etc/cron.d
+anacron=/usr/sbin/anacron
+anacrontab=/etc/anacrontab
