@@ -20,7 +20,7 @@ arguments explicitement enregistrés et validés.
   l’interface ;
 - `internal/webapp` gère les routes, permissions, formulaires et rendus HTML ;
 - `internal/authstore` gère SQLite, les utilisateurs, sessions et paramètres ;
-- `cmd/*` assemble les dépendances et démarre les quatre exécutables.
+- `cmd/*` assemble les dépendances et démarre les cinq exécutables.
 
 Les ressources HTML, CSS et JavaScript principales sont intégrées dans le
 binaire web. Les ressources graphiques volumineuses et les thèmes restent des

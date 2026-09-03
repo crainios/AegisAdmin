@@ -33,6 +33,26 @@
 </form>
 </section>
 <section class="content-card">
+<h2>Serveur de messagerie SMTP</h2>
+<p class="muted">Ces paramètres seront utilisés pour les futurs envois de notifications. Le mot de passe est chiffré avant son enregistrement en base de données.</p>
+<form class="selector-form" method="post" action="/setting/smtp">
+<input type="hidden" name="_token" value="{{CSRF}}">
+<label for="smtp-host">Serveur Host</label>
+<input id="smtp-host" name="smtp_host" maxlength="253" value="{{SMTP_HOST}}" placeholder="smtp.example.com" required>
+<label for="smtp-username">Nom utilisateur (login)</label>
+<input id="smtp-username" name="smtp_username" maxlength="254" value="{{SMTP_USERNAME}}" autocomplete="username">
+<label for="smtp-password">Mot de passe</label>
+<input id="smtp-password" name="smtp_password" type="password" maxlength="1024" autocomplete="new-password" placeholder="{{SMTP_PASSWORD_MASK}}" aria-describedby="smtp-password-help">
+<p id="smtp-password-help" class="muted">{{SMTP_PASSWORD_STATUS}}</p>
+<label><input type="checkbox" name="clear_password" value="1"> Effacer le mot de passe enregistré</label>
+<label for="smtp-port">Port</label>
+<input id="smtp-port" name="smtp_port" type="number" min="1" max="65535" value="{{SMTP_PORT}}" required>
+<label for="smtp-security">SMTPSecure</label>
+<select id="smtp-security" name="smtp_security" required>{{SMTP_SECURITY}}</select>
+<button class="primary-button">Enregistrer la configuration SMTP</button>
+</form>
+</section>
+<section class="content-card">
 <h2>Accès HTTPS dédié</h2>{{ADMIN_MESSAGE}}<form class="selector-form" method="post" action="/setting/admin-access">
 <input type="hidden" name="_token" value="{{CSRF}}">
 <label>

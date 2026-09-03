@@ -37,6 +37,7 @@ type Jail struct {
 	BannedIPs       []string `json:"banned_ips"`
 }
 type Snapshot struct {
+	Installed               bool
 	Info                    Info
 	Status                  Status
 	ConfigValid             bool
@@ -51,10 +52,16 @@ func (c *Client) Fail2banSnapshot(ctx context.Context, requested string) (Snapsh
 		return Snapshot{}, e
 	}
 	var s Snapshot
-	d, e := c.call("info", nil)
-	if e != nil {
-		return s, e
+	reply, e := c.backend.Execute(protocol.Request{Domain: "fail2ban", Command: "info"})
+	if e == nil && !reply.Response.Success && reply.Response.Error != nil && reply.Response.Error.Code == "FAIL2BAN_NOT_INSTALLED" {
+		s.Status.Jails = []string{}
+		return s, nil
 	}
+	if e != nil || !reply.Response.Success || reply.Response.Data == nil {
+		return s, errors.New("fail2ban request failed")
+	}
+	s.Installed = true
+	d := *reply.Response.Data
 	if e = decode(d, &s.Info); e != nil {
 		return s, e
 	}

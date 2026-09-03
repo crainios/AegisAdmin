@@ -1,12 +1,14 @@
 # AegisAdmin Go
 
-Ce module contient les quatre exécutables AegisAdmin :
+Ce module contient les cinq exécutables AegisAdmin :
 
 - `aegisadmin-daemon` : opérations système privilégiées via socket Unix ;
 - `aegisadmin-system-go` : client d’administration en ligne de commande ;
 - `aegisadmin-web` : serveur web HTTPS non privilégié ;
 - `aegisadmin-admin` : migrations SQLite, mot de passe de secours et
   désactivation de secours de la double authentification root.
+- `aegisadmin-updater` : installation indépendante et suivie des mises à jour
+  du système et du paquet AegisAdmin.
 
 Validation locale :
 

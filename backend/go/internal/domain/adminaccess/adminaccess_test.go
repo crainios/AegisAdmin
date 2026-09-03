@@ -28,3 +28,14 @@ func TestRenderUsesManagedValues(t *testing.T) {
 		}
 	}
 }
+
+func TestDirectListenAddresses(t *testing.T) {
+	listeners := directListenAddresses([]string{"192.0.2.10", "2001:db8::10"}, 8443, true)
+	if strings.Join(listeners, ",") != "192.0.2.10:8443,[2001:db8::10]:8443" {
+		t.Fatalf("listeners=%#v", listeners)
+	}
+	disabled := directListenAddresses([]string{"*"}, 8443, false)
+	if len(disabled) != 1 || disabled[0] != "127.0.0.1:9080" {
+		t.Fatalf("disabled listeners=%#v", disabled)
+	}
+}

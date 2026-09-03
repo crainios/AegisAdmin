@@ -21,8 +21,10 @@ import (
 )
 
 const (
-	processLimit = 500
-	psCommand    = "/usr/bin/ps"
+	processLimit     = 500
+	psCommand        = "/usr/bin/ps"
+	systemctlCommand = "/usr/bin/systemctl"
+	dpkgQueryCommand = "/usr/bin/dpkg-query"
 )
 
 var backendVersion = buildinfo.Version
@@ -59,6 +61,7 @@ type process struct {
 	MemoryBytes    int64   `json:"memory_bytes"`
 	ElapsedSeconds int64   `json:"elapsed_seconds"`
 	Name           string  `json:"name"`
+	Description    string  `json:"description,omitempty"`
 }
 
 func NewLinuxCollector(ctx context.Context) *LinuxCollector {
@@ -171,6 +174,7 @@ func (c *LinuxCollector) Processes(ctx context.Context) (map[string]any, error) 
 	if err != nil {
 		return nil, err
 	}
+	enrichProcessDescriptions(commandCtx, processes, "/proc")
 
 	total := len(processes)
 	returned := total
@@ -459,6 +463,212 @@ func countProcesses(path string) (int, error) {
 		}
 	}
 	return total, nil
+}
+
+func enrichProcessDescriptions(ctx context.Context, processes []process, procRoot string) {
+	unitsByPID := make(map[int]string)
+	unitSet := make(map[string]struct{})
+	for _, item := range processes {
+		unit := readProcessUnit(filepath.Join(procRoot, strconv.Itoa(item.PID), "cgroup"))
+		if unit == "" {
+			continue
+		}
+		unitsByPID[item.PID] = unit
+		unitSet[unit] = struct{}{}
+	}
+	unitDescriptions := systemdUnitDescriptions(ctx, sortedKeys(unitSet))
+
+	executablesByPID := make(map[int]string)
+	executableSet := make(map[string]struct{})
+	for index := range processes {
+		if description := unitDescriptions[unitsByPID[processes[index].PID]]; description != "" {
+			processes[index].Description = description
+			continue
+		}
+		executable, err := os.Readlink(filepath.Join(procRoot, strconv.Itoa(processes[index].PID), "exe"))
+		if err != nil {
+			continue
+		}
+		executable = strings.TrimSuffix(executable, " (deleted)")
+		if !filepath.IsAbs(executable) {
+			continue
+		}
+		executablesByPID[processes[index].PID] = executable
+		executableSet[executable] = struct{}{}
+	}
+	packageByExecutable := debianPackageOwners(ctx, sortedKeys(executableSet))
+	packageSet := make(map[string]struct{})
+	for _, packageName := range packageByExecutable {
+		packageSet[packageName] = struct{}{}
+	}
+	packageDescriptions := debianPackageDescriptions(ctx, sortedKeys(packageSet))
+
+	for index := range processes {
+		if processes[index].Description != "" {
+			continue
+		}
+		packageName := packageByExecutable[executablesByPID[processes[index].PID]]
+		if description := packageDescriptions[packageName]; description != "" {
+			processes[index].Description = description
+			continue
+		}
+		processes[index].Description = knownProcessDescription(processes[index].Name)
+	}
+}
+
+func readProcessUnit(path string) string {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		for _, component := range strings.Split(line, "/") {
+			if strings.HasSuffix(component, ".service") && validSystemdUnit(component) {
+				return component
+			}
+		}
+	}
+	return ""
+}
+
+func validSystemdUnit(value string) bool {
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') && !strings.ContainsRune("_.@:-\\x", character) {
+			return false
+		}
+	}
+	return true
+}
+
+func systemdUnitDescriptions(ctx context.Context, units []string) map[string]string {
+	result := make(map[string]string)
+	if len(units) == 0 {
+		return result
+	}
+	arguments := []string{"show", "--property=Id", "--property=Description", "--"}
+	arguments = append(arguments, units...)
+	command := exec.CommandContext(ctx, systemctlCommand, arguments...)
+	command.Env = append(os.Environ(), "LC_ALL=C")
+	output, err := command.Output()
+	if err != nil {
+		return result
+	}
+	return parseSystemdDescriptions(string(output))
+}
+
+func parseSystemdDescriptions(output string) map[string]string {
+	result := make(map[string]string)
+	for _, block := range strings.Split(strings.TrimSpace(output), "\n\n") {
+		properties := make(map[string]string)
+		for _, line := range strings.Split(block, "\n") {
+			key, value, found := strings.Cut(line, "=")
+			if found {
+				properties[key] = strings.TrimSpace(value)
+			}
+		}
+		if id, description := properties["Id"], safeDescription(properties["Description"]); id != "" && description != "" {
+			result[id] = description
+		}
+	}
+	return result
+}
+
+func debianPackageOwners(ctx context.Context, executables []string) map[string]string {
+	result := make(map[string]string)
+	if len(executables) == 0 {
+		return result
+	}
+	arguments := append([]string{"-S", "--"}, executables...)
+	command := exec.CommandContext(ctx, dpkgQueryCommand, arguments...)
+	command.Env = append(os.Environ(), "LC_ALL=C")
+	output, err := command.CombinedOutput()
+	if err != nil && len(output) == 0 {
+		return result
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		separator := strings.LastIndex(line, ": ")
+		if separator < 1 {
+			continue
+		}
+		packageName := strings.TrimSpace(strings.Split(line[:separator], ",")[0])
+		executable := strings.TrimSpace(line[separator+2:])
+		if packageName != "" && filepath.IsAbs(executable) {
+			result[executable] = packageName
+		}
+	}
+	return result
+}
+
+func debianPackageDescriptions(ctx context.Context, packages []string) map[string]string {
+	result := make(map[string]string)
+	if len(packages) == 0 {
+		return result
+	}
+	arguments := []string{"-W", `-f=${binary:Package}\t${binary:Summary}\n`, "--"}
+	arguments = append(arguments, packages...)
+	command := exec.CommandContext(ctx, dpkgQueryCommand, arguments...)
+	command.Env = append(os.Environ(), "LC_ALL=C")
+	output, err := command.Output()
+	if err != nil {
+		return result
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		packageName, description, found := strings.Cut(line, "\t")
+		if found && strings.TrimSpace(packageName) != "" {
+			result[strings.TrimSpace(packageName)] = safeDescription(description)
+		}
+	}
+	return result
+}
+
+func safeDescription(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) > 240 {
+		value = string(runes[:240])
+	}
+	return value
+}
+
+func sortedKeys(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func knownProcessDescription(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	descriptions := map[string]string{
+		"apache2":         "Serveur web Apache et traitement de ses connexions.",
+		"cron":            "Planification et lancement des tâches périodiques.",
+		"fail2ban-server": "Surveillance des journaux et bannissement des adresses malveillantes.",
+		"mariadbd":        "Serveur de bases de données MariaDB.",
+		"mysqld":          "Serveur de bases de données MySQL.",
+		"nginx":           "Serveur web et proxy inverse Nginx.",
+		"postgres":        "Serveur de bases de données PostgreSQL.",
+		"redis-server":    "Serveur de cache et de données Redis.",
+		"sshd":            "Serveur d’accès distant sécurisé SSH.",
+		"tor":             "Routage des connexions et services cachés via le réseau Tor.",
+	}
+	if description := descriptions[normalized]; description != "" {
+		return description
+	}
+	for prefix, description := range map[string]string{
+		"aegisadmin-": "Composant interne d’AegisAdmin.",
+		"php-fpm":     "Exécute les applications PHP pour le serveur web.",
+		"php8.":       "Exécute les applications PHP pour le serveur web.",
+	} {
+		if strings.HasPrefix(normalized, prefix) {
+			return description
+		}
+	}
+	return ""
 }
 
 func parseProcesses(output string, collectorPID int) ([]process, error) {

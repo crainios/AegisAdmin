@@ -53,6 +53,30 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestApplicationJavaScriptOffersNeonTheme(t *testing.T) {
+	asset, err := embeddedAssets.ReadFile("assets/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(asset)
+	if !strings.Contains(content, `"neon"`) || !strings.Contains(content, `<option value="neon">Néon Pop</option>`) || !strings.Contains(content, `group.dataset.accent`) {
+		t.Fatal("the Neon Pop theme or its navigation accents are missing")
+	}
+	if !strings.Contains(content, `window.location.replace`) || !strings.Contains(content, `refreshed=${Date.now()}`) {
+		t.Fatal("the application update completion does not reload the updates page")
+	}
+}
+
+func TestProcessDescriptionsAreLimitedToKnownProcesses(t *testing.T) {
+	rows := renderProcesses([]webdashboard.Process{{Name: "sshd", Description: "Serveur d’accès distant sécurisé SSH."}, {Name: "private-worker"}})
+	if !strings.Contains(rows, `title="Serveur d’accès distant sécurisé SSH."`) || !strings.Contains(rows, `aria-label="sshd : Serveur d’accès distant sécurisé SSH."`) {
+		t.Fatalf("known process has no accessible description: %q", rows)
+	}
+	if strings.Count(rows, `process-name--described`) != 1 {
+		t.Fatalf("unknown process received an approximate description: %q", rows)
+	}
+}
+
 func TestRootCanReadUserAccessLog(t *testing.T) {
 	users := &fakeLoginUsers{user: authstore.User{ID: 1, Login: "root", Type: "root", Status: "active", AuthVersion: 1}}
 	dependencies := testDependencies(t, users)
@@ -137,6 +161,8 @@ func TestIndexAndNotFound(t *testing.T) {
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/app.css?v=test", nil))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), ".dashboard-shell") ||
+		!strings.Contains(response.Body.String(), ".compact-select") ||
+		!strings.Contains(response.Body.String(), ".network-selected-button") ||
 		!strings.Contains(response.Header().Get("Cache-Control"), "immutable") {
 		t.Fatalf("unexpected versioned stylesheet: %d %q", response.Code, response.Header().Get("Cache-Control"))
 	}
@@ -239,7 +265,10 @@ func TestLoginFlowRotatesSession(t *testing.T) {
 	if dashboardResponse.Code != http.StatusOK || !strings.Contains(dashboardResponse.Body.String(), "Tableau de bord") ||
 		!strings.Contains(dashboardResponse.Body.String(), `/assets/app.js?v=`) ||
 		strings.Contains(dashboardResponse.Body.String(), "Modules accessibles") ||
+		strings.Contains(dashboardResponse.Body.String(), `class="server-summary"`) ||
+		strings.Contains(dashboardResponse.Body.String(), "Disponibilité") ||
 		!strings.Contains(dashboardResponse.Body.String(), "serveur-test") ||
+		!strings.Contains(dashboardResponse.Body.String(), `data-dashboard-uptime-seconds="183840"`) ||
 		!strings.Contains(dashboardResponse.Body.String(), "23,0 %") {
 		t.Fatalf("dashboard response = %d %q", dashboardResponse.Code, dashboardResponse.Body.String())
 	}
@@ -364,7 +393,8 @@ func TestNetworkRequiresPermissionAndRendersDetails(t *testing.T) {
 	request.AddCookie(websession.Cookie(session.ID))
 	response := httptest.NewRecorder()
 	Handler(dependencies).ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "192.0.2.2/24") || !strings.Contains(response.Body.String(), "00:11:22:33:44:55") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "192.0.2.2/24") || !strings.Contains(response.Body.String(), "00:11:22:33:44:55") ||
+		!strings.Contains(response.Body.String(), `class="network-selected-button" aria-current="true">Sélectionnée</span>`) {
 		t.Fatalf("network response = %d %q", response.Code, response.Body.String())
 	}
 
@@ -714,6 +744,16 @@ func TestRenderCertificatesPlacesActionMenuFirst(t *testing.T) {
 	}
 }
 
+func TestRenderCertificatesSortsByDomains(t *testing.T) {
+	rows := renderCertificates([]webcertbot.Certificate{
+		{Name: "zeta", Domains: []string{"zeta.example"}, Valid: true},
+		{Name: "alpha", Domains: []string{"alpha.example"}, Valid: true},
+	}, "token", false)
+	if alpha, zeta := strings.Index(rows, "alpha.example"), strings.Index(rows, "zeta.example"); alpha < 0 || zeta < 0 || alpha > zeta {
+		t.Fatalf("certificate rows=%q", rows)
+	}
+}
+
 func TestFail2banRightsSeparateActionsAndModification(t *testing.T) {
 	users := &fakeLoginUsers{fail2banPermission: "view", user: authstore.User{ID: 19, Login: "operator", Type: "user", Status: "active", AuthVersion: 1}}
 	d := testDependencies(t, users)
@@ -792,11 +832,33 @@ func TestFirewallRightsSeparateActionsAndModification(t *testing.T) {
 }
 
 func TestRenderFirewallRulesSortsPortsAndPlacesActionFirst(t *testing.T) {
-	rows := renderFirewallRules([]webfirewall.Rule{{ID: 1, Ports: []string{"9080"}}, {ID: 2, Ports: []string{"22"}}}, "token", true)
-	port22, port9080 := strings.Index(rows, ">22</td>"), strings.Index(rows, ">9080</td>")
+	rows := renderFirewallRulesWithServices([]webfirewall.Rule{{ID: 1, Protocol: "tcp", Ports: []string{"9080"}}, {ID: 2, Protocol: "tcp", Ports: []string{"22"}}}, "token", true, map[string]string{"22/tcp": "ssh"})
+	port22, port9080 := strings.Index(rows, ">22 (ssh)</td>"), strings.Index(rows, ">9080</td>")
 	deleteAction, firstID := strings.Index(rows, `action="/firewall/delete"`), strings.Index(rows, `<th>2</th>`)
 	if port22 < 0 || port9080 < 0 || port22 > port9080 || deleteAction < 0 || deleteAction > firstID {
 		t.Fatalf("firewall rows=%q", rows)
+	}
+}
+
+func TestFirewallServicesAndPortFormatting(t *testing.T) {
+	services := parseFirewallServices("http 80/tcp www\ndomain 53/udp # DNS\ninvalid value\n")
+	if services["80/tcp"] != "http" || services["53/udp"] != "domain" {
+		t.Fatalf("services=%#v", services)
+	}
+	formatted := formatFirewallPorts([]string{"80,443", "1000:1010"}, "tcp", map[string]string{"80/tcp": "http", "443/tcp": "https"})
+	if formatted != "80 (http), 443 (https), 1000:1010" {
+		t.Fatalf("formatted ports=%q", formatted)
+	}
+}
+
+func TestFirewallProfileIsDisplayedWhenPortsAreEmpty(t *testing.T) {
+	rule := webfirewall.Rule{ID: 1, Protocol: "any", Destination: "Apache Full"}
+	if target := formatFirewallRuleTarget(rule, map[string]string{}); target != "Apache Full" {
+		t.Fatalf("profile target=%q", target)
+	}
+	rows := renderFirewallRulesWithServices([]webfirewall.Rule{rule}, "token", false, map[string]string{})
+	if !strings.Contains(rows, ">Apache Full</td>") {
+		t.Fatalf("firewall profile row=%q", rows)
 	}
 }
 
@@ -1276,7 +1338,13 @@ func (f *fakeLoginUsers) PermissionForModule(_ context.Context, user authstore.U
 
 func (f *fakeLoginUsers) Snapshot(context.Context) (webdashboard.Snapshot, error) {
 	return webdashboard.Snapshot{
-		Hostname: "serveur-test", System: "Debian test", Kernel: "6.12 · amd64", Uptime: "2 j 3 h 4 min",
+		Hostname: "serveur-test", System: "Debian test", Kernel: "6.12 · amd64", Uptime: "2 j 3 h 4 min", UptimeSeconds: 183840,
+		Information: []webdashboard.Information{
+			{Label: "Nom d’hôte", Value: "serveur-test"},
+			{Label: "Version", Value: "13"},
+			{Label: "Noyau", Value: "6.12"},
+			{Label: "Durée de fonctionnement", Value: "2 j 3 h 4 min"},
+		},
 		Cards: []webdashboard.Card{
 			{Title: "Processeur", Value: "23,0 %", Subtitle: "4 cœurs", Status: "success"},
 			{Title: "Mémoire", Value: "81,0 %", Subtitle: "6,5 Gio utilisés", Status: "warning"},
@@ -1352,7 +1420,7 @@ func (f *fakeLoginUsers) RestartMySQL(context.Context) error { f.mysqlRestarted 
 func (f *fakeLoginUsers) TorSnapshot(context.Context) (webtor.Snapshot, error) {
 	bootstrap := 100
 	host := "example.onion"
-	return webtor.Snapshot{Info: webtor.Info{Product: "Tor", Version: "0.4.8", ConfigFile: "/etc/tor/torrc", Service: "tor@default", Unit: "tor@default.service"}, Status: webtor.Status{Exists: true, Active: true, Enabled: true, State: "running", MainPID: 12, Memory: 1024, Tasks: 4, Bootstrap: &bootstrap}, ConfigurationValid: true, ConfigurationMessage: "Configuration valide", Services: []webtor.Onion{{ID: "site", Hostname: &host}}}, nil
+	return webtor.Snapshot{Installed: true, Info: webtor.Info{Product: "Tor", Version: "0.4.8", ConfigFile: "/etc/tor/torrc", Service: "tor@default", Unit: "tor@default.service"}, Status: webtor.Status{Exists: true, Active: true, Enabled: true, State: "running", MainPID: 12, Memory: 1024, Tasks: 4, Bootstrap: &bootstrap}, ConfigurationValid: true, ConfigurationMessage: "Configuration valide", Services: []webtor.Onion{{ID: "site", Hostname: &host}}}, nil
 }
 func (f *fakeLoginUsers) TorAction(_ context.Context, action string) error {
 	f.torAction = action
@@ -1374,7 +1442,7 @@ func (f *fakeLoginUsers) ApacheSiteAction(_ context.Context, action, _, _, _ str
 	return nil
 }
 func (f *fakeLoginUsers) Fail2banSnapshot(context.Context, string) (webfail2ban.Snapshot, error) {
-	return webfail2ban.Snapshot{Info: webfail2ban.Info{Product: "Fail2ban", Version: "1.1"}, Status: webfail2ban.Status{Exists: true, Active: true, Enabled: true, State: "running", Jails: []string{"sshd"}}, ConfigValid: true, ConfigMessage: "Configuration valide", Selected: "sshd", Jail: &webfail2ban.Jail{CurrentlyBanned: 1, BannedIPs: []string{"192.0.2.4"}}}, nil
+	return webfail2ban.Snapshot{Installed: true, Info: webfail2ban.Info{Product: "Fail2ban", Version: "1.1"}, Status: webfail2ban.Status{Exists: true, Active: true, Enabled: true, State: "running", Jails: []string{"sshd"}}, ConfigValid: true, ConfigMessage: "Configuration valide", Selected: "sshd", Jail: &webfail2ban.Jail{CurrentlyBanned: 1, BannedIPs: []string{"192.0.2.4"}}}, nil
 }
 func (f *fakeLoginUsers) Action(_ context.Context, action, jail, address string) error {
 	f.fail2banAction = action
@@ -1408,6 +1476,13 @@ func (f *fakeLoginUsers) CronAction(_ context.Context, action, user, id, schedul
 		return "1234567890abcdef1234567890abcdef", nil
 	}
 	return "", nil
+}
+
+func (f *fakeLoginUsers) CronBackupCreate(_ context.Context, _ webcron.BackupRequest) error {
+	return nil
+}
+func (f *fakeLoginUsers) CronBackupAction(_ context.Context, _, _ string) (string, error) {
+	return "0123456789abcdef0123456789abcdef", nil
 }
 func (f *fakeLoginUsers) CronResult(_ context.Context, id string) (webcron.ExecutionResult, error) {
 	exit := 0

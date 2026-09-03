@@ -13,7 +13,7 @@ func TestSnapshotAndActions(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if s.Info.Version != "0.4.8" || !s.Status.Active || !s.ConfigurationValid || len(s.Services) != 1 {
+	if !s.Installed || s.Info.Version != "0.4.8" || !s.Status.Active || !s.ConfigurationValid || len(s.Services) != 1 {
 		t.Fatalf("snapshot=%#v", s)
 	}
 	if e = New(b).TorAction(context.Background(), "reload"); e != nil {
@@ -22,6 +22,20 @@ func TestSnapshotAndActions(t *testing.T) {
 	if b.requests[4].Command != "reload" {
 		t.Fatalf("requests=%#v", b.requests)
 	}
+}
+
+func TestSnapshotReportsTorNotInstalled(t *testing.T) {
+	client := New(notInstalledBackend{})
+	snapshot, err := client.TorSnapshot(context.Background())
+	if err != nil || snapshot.Installed || len(snapshot.Services) != 0 {
+		t.Fatalf("snapshot=%#v err=%v", snapshot, err)
+	}
+}
+
+type notInstalledBackend struct{}
+
+func (notInstalledBackend) Execute(protocol.Request) (protocol.Reply, error) {
+	return protocol.Reply{ExitCode: 5, Response: api.Failure("TOR_NOT_INSTALLED", "Tor n’est pas installé sur ce serveur.")}, nil
 }
 
 type fakeBackend struct{ requests []protocol.Request }

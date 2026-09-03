@@ -35,6 +35,7 @@ type Onion struct {
 	Ports    []map[string]any `json:"ports"`
 }
 type Snapshot struct {
+	Installed            bool
 	Info                 Info
 	Status               Status
 	ConfigurationValid   bool
@@ -49,10 +50,16 @@ func (c *Client) TorSnapshot(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, e
 	}
 	var s Snapshot
-	d, e := c.call("info")
-	if e != nil {
-		return s, e
+	reply, e := c.backend.Execute(protocol.Request{Domain: "tor", Command: "info"})
+	if e == nil && !reply.Response.Success && reply.Response.Error != nil && reply.Response.Error.Code == "TOR_NOT_INSTALLED" {
+		s.Services = []Onion{}
+		return s, nil
 	}
+	if e != nil || !reply.Response.Success || reply.Response.Data == nil {
+		return s, errors.New("Tor backend request failed")
+	}
+	s.Installed = true
+	d := *reply.Response.Data
 	if e = decode(d, &s.Info); e != nil {
 		return s, e
 	}

@@ -32,14 +32,15 @@ type runner interface {
 }
 type execRunner struct{}
 type Backend struct {
-	runner  runner
-	clients []string
+	runner          runner
+	clients         []string
+	credentialsFile string
 }
 type Handler struct{ backend *Backend }
 
 func New(backend *Backend) *Handler { return &Handler{backend} }
 func NewLinuxBackend() *Backend {
-	return &Backend{runner: execRunner{}, clients: []string{
+	return &Backend{runner: execRunner{}, credentialsFile: "/etc/aegisadmin-system/mysql-client.cnf", clients: []string{
 		"/usr/bin/mysql", "/usr/bin/mariadb",
 		"/usr/local/bin/mysql", "/usr/local/bin/mariadb",
 	}}
@@ -49,7 +50,7 @@ func (h *Handler) Handle(ctx context.Context, command string, arguments []string
 	if command == "" {
 		return failure(errOf(2, "MISSING_COMMAND", "Aucune commande n’a été indiquée pour le domaine mysql.", nil))
 	}
-	known := map[string]bool{"info": true, "status": true, "databases": true, "variables": true, "restart": true}
+	known := map[string]bool{"service": true, "info": true, "status": true, "databases": true, "variables": true, "restart": true}
 	if !known[command] {
 		return failure(errOf(4, "COMMAND_NOT_FOUND", "La commande demandée n’existe pas dans le domaine mysql.", nil))
 	}
@@ -99,7 +100,12 @@ func (b *Backend) query(ctx context.Context, sql string) ([][]string, *Error) {
 	if e != nil {
 		return nil, e
 	}
-	r, e := b.runner.Run(ctx, client, "--batch", "--raw", "--skip-column-names", "--protocol=socket", "--connect-timeout=5", "--execute", sql)
+	arguments := []string{}
+	if b.validCredentialsFile() {
+		arguments = append(arguments, "--defaults-extra-file="+b.credentialsFile)
+	}
+	arguments = append(arguments, "--batch", "--raw", "--skip-column-names", "--protocol=socket", "--connect-timeout=5", "--execute", sql)
+	r, e := b.runner.Run(ctx, client, arguments...)
 	if e != nil {
 		return nil, e
 	}
@@ -113,6 +119,14 @@ func (b *Backend) query(ctx context.Context, sql string) ([][]string, *Error) {
 		}
 	}
 	return rows, nil
+}
+
+func (b *Backend) validCredentialsFile() bool {
+	if b.credentialsFile == "" {
+		return false
+	}
+	info, err := os.Lstat(b.credentialsFile)
+	return err == nil && info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular() && info.Mode().Perm()&0o077 == 0
 }
 func number(value, name string) (int64, *Error) {
 	n, e := strconv.ParseInt(value, 10, 64)
@@ -171,7 +185,7 @@ func (b *Backend) service(ctx context.Context) (map[string]any, *Error) {
 }
 
 const infoSQL = "SELECT @@version, @@version_comment, @@hostname, @@port, @@socket, @@datadir, @@default_storage_engine"
-const databasesSQL = "SELECT s.SCHEMA_NAME, COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS size_bytes, COUNT(t.TABLE_NAME) AS table_count FROM information_schema.SCHEMATA AS s LEFT JOIN information_schema.TABLES AS t ON t.TABLE_SCHEMA = s.SCHEMA_NAME GROUP BY s.SCHEMA_NAME ORDER BY s.SCHEMA_NAME"
+const databasesSQL = "CALL aegisadmin_monitoring.database_inventory_v2()"
 
 func inSQL(prefix string, names []string) string {
 	quoted := make([]string, len(names))
@@ -182,6 +196,8 @@ func inSQL(prefix string, names []string) string {
 }
 func (b *Backend) execute(ctx context.Context, command string) (map[string]any, *Error) {
 	switch command {
+	case "service":
+		return b.service(ctx)
 	case "info":
 		return b.info(ctx)
 	case "status":
@@ -243,10 +259,12 @@ func (b *Backend) status(ctx context.Context) (map[string]any, *Error) {
 		raw[r[0]] = r[1]
 	}
 	metrics := map[string]any{}
+	missing := []string{}
 	for _, name := range statusVariables {
 		value, ok := raw[name]
 		if !ok {
-			return nil, errOf(10, "MISSING_MYSQL_STATUS_VARIABLE", "Une métrique MySQL obligatoire est absente.", map[string]any{"variable": name})
+			missing = append(missing, name)
+			continue
 		}
 		n, ne := number(value, name)
 		if ne != nil {
@@ -254,7 +272,7 @@ func (b *Backend) status(ctx context.Context) (map[string]any, *Error) {
 		}
 		metrics[strings.ToLower(name)] = n
 	}
-	return map[string]any{"metrics": metrics}, nil
+	return map[string]any{"metrics": metrics, "missing_variables": missing}, nil
 }
 func (b *Backend) databases(ctx context.Context) (map[string]any, *Error) {
 	rows, e := b.query(ctx, databasesSQL)
@@ -278,7 +296,7 @@ func (b *Backend) databases(ctx context.Context) (map[string]any, *Error) {
 		if _, ok := systemDatabases[r[0]]; ok {
 			kind = "system"
 		}
-		items = append(items, map[string]any{"name": r[0], "type": kind, "size_bytes": size, "table_count": count})
+		items = append(items, map[string]any{"name": r[0], "kind": kind, "size_bytes": size, "table_count": count})
 	}
 	return map[string]any{"databases": items}, nil
 }

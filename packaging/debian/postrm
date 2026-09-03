@@ -7,8 +7,10 @@ if [ "${1:-}" = purge ]; then
     rm -f /etc/aegisadmin-system/tls/admin-local.crt \
         /etc/aegisadmin-system/tls/admin-local.key \
         /etc/aegisadmin-system/admin-web \
+        /etc/aegisadmin-system/mysql-client.cnf \
         /etc/apache2/sites-available/aegisadmin-admin.conf
 fi
 
-# /var/lib/aegisadmin est volontairement conservé, y compris après purge.
+# Les données administratives sous /var/lib/aegisadmin sont conservées. Les
+# jetons de session, qui ne sont pas des sauvegardes, sont invalidés par prerm.
 exit 0

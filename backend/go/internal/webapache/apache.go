@@ -37,6 +37,7 @@ type Module struct {
 	Type string `json:"type"`
 }
 type Snapshot struct {
+	Installed                     bool
 	Version, Built, ConfigMessage string
 	ConfigValid                   bool
 	VHosts                        []VHost
@@ -55,7 +56,8 @@ func (c *Client) ApacheSnapshot(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, errors.New("apache overview unavailable")
 	}
 	var p struct {
-		Info struct {
+		Installed bool `json:"installed"`
+		Info      struct {
 			Version string `json:"version"`
 			Built   string `json:"built"`
 		} `json:"info"`
@@ -76,7 +78,7 @@ func (c *Client) ApacheSnapshot(ctx context.Context) (Snapshot, error) {
 	if e = decode(*r.Response.Data, &p); e != nil {
 		return Snapshot{}, e
 	}
-	return Snapshot{Version: p.Info.Version, Built: p.Info.Built, ConfigValid: p.Config.Valid, ConfigMessage: p.Config.Message, VHosts: p.VHosts.Items, Sites: p.Sites.Items, Modules: p.Modules.Items}, nil
+	return Snapshot{Installed: p.Installed, Version: p.Info.Version, Built: p.Info.Built, ConfigValid: p.Config.Valid, ConfigMessage: p.Config.Message, VHosts: p.VHosts.Items, Sites: p.Sites.Items, Modules: p.Modules.Items}, nil
 }
 func (c *Client) ApacheAction(ctx context.Context, action string) error {
 	if e := ctx.Err(); e != nil {

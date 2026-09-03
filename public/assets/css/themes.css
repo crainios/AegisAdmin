@@ -243,3 +243,157 @@ html[data-theme="bootstrap"] {
     --shadow-small: 0 0.125rem 0.25rem rgb(33 37 41 / 0.075);
     --shadow-large: 0 1rem 3rem rgb(33 37 41 / 0.175);
 }
+
+html[data-theme="neon"] {
+    color-scheme: dark;
+
+    --color-background: #090b1a;
+    --color-surface: #111027;
+    --color-surface-elevated: #17132f;
+    --color-surface-hover: #211b43;
+    --color-border: #41356d;
+
+    --color-text: #f5f7ff;
+    --color-text-muted: #c7c4e2;
+    --color-text-subtle: #9894bd;
+
+    --color-primary: #00e5ff;
+    --color-primary-hover: #6ff3ff;
+    --color-primary-contrast: #04141a;
+    --color-primary-soft: rgb(0 229 255 / 0.14);
+    --color-primary-border: rgb(0 229 255 / 0.42);
+
+    --color-success: #39ff88;
+    --color-success-soft: rgb(57 255 136 / 0.14);
+    --color-warning: #ff8a00;
+    --color-danger: #ff3d5a;
+    --color-danger-soft: rgb(255 61 90 / 0.17);
+    --color-secondary: #9b8bff;
+
+    --color-page-glow: rgb(255 43 214 / 0.13);
+    --color-sidebar-start: rgb(23 19 47 / 0.99);
+    --color-sidebar-end: rgb(9 11 26 / 0.99);
+    --color-header-background: rgb(9 11 26 / 0.86);
+    --color-header-border: rgb(0 229 255 / 0.28);
+    --color-table-stripe: rgb(155 139 255 / 0.07);
+    --color-card-start: rgb(29 23 61 / 0.97);
+    --color-card-end: rgb(17 16 39 / 0.97);
+    --color-card-hover-border: rgb(255 43 214 / 0.55);
+    --color-progress-track: rgb(155 139 255 / 0.17);
+    --color-modal-backdrop: rgb(3 2 14 / 0.82);
+    --color-auth-backdrop: rgb(3 2 14 / 0.73);
+    --color-auth-text: #ffffff;
+    --color-auth-text-muted: #d9d5f2;
+    --color-auth-card-start: rgb(29 23 61 / 0.9);
+    --color-auth-card-end: rgb(12 11 32 / 0.92);
+
+    --color-badge-success-text: #a6ffc9;
+    --color-badge-success-background: rgb(57 255 136 / 0.13);
+    --color-badge-success-border: rgb(57 255 136 / 0.42);
+    --color-badge-warning-text: #ffe2a8;
+    --color-badge-warning-background: rgb(255 138 0 / 0.15);
+    --color-badge-warning-border: rgb(255 138 0 / 0.44);
+    --color-badge-danger-text: #ffc1cb;
+    --color-badge-danger-background: rgb(255 61 90 / 0.15);
+    --color-badge-danger-border: rgb(255 61 90 / 0.45);
+    --color-badge-secondary-text: #ded8ff;
+    --color-badge-secondary-background: rgb(155 139 255 / 0.14);
+    --color-badge-secondary-border: rgb(155 139 255 / 0.38);
+    --color-badge-info-text: #adf7ff;
+    --color-badge-info-background: rgb(0 229 255 / 0.13);
+    --color-badge-info-border: rgb(0 229 255 / 0.4);
+    --color-badge-neutral-background: rgb(199 196 226 / 0.1);
+    --color-badge-neutral-border: rgb(199 196 226 / 0.27);
+
+    --color-button-status-contrast: #ffffff;
+    --color-button-warning-contrast: #1b0e00;
+    --color-switch-thumb: #ffffff;
+    --shadow-switch-thumb: 0 1px 5px rgb(0 0 0 / 0.45);
+
+    --color-focus-ring: rgb(0 229 255 / 0.2);
+    --color-focus-ring-strong: rgb(0 229 255 / 0.3);
+    --color-focus-outline: rgb(0 229 255 / 0.62);
+    --color-control-hover-border: rgb(255 43 214 / 0.62);
+
+    --color-brand-secondary: #ff2bd6;
+    --color-brand-outline: rgb(0 229 255 / 0.28);
+    --color-brand-shadow: rgb(255 43 214 / 0.3);
+
+    --shadow-small: 0 9px 28px rgb(0 0 0 / 0.3), 0 0 16px rgb(0 229 255 / 0.05);
+    --shadow-large: 0 26px 68px rgb(0 0 0 / 0.42), 0 0 28px rgb(255 43 214 / 0.08);
+}
+
+/* Accents expressifs réservés au thème Néon Pop. */
+html[data-theme="neon"] body.dashboard-body {
+    background:
+        radial-gradient(circle at 88% 5%, rgb(255 43 214 / 0.14), transparent 27rem),
+        radial-gradient(circle at 28% 92%, rgb(0 229 255 / 0.09), transparent 34rem),
+        var(--color-background);
+}
+
+html[data-theme="neon"] .app-header {
+    box-shadow: 0 1px 18px rgb(0 229 255 / 0.09);
+}
+
+html[data-theme="neon"] .app-brand__mark {
+    box-shadow: 0 0 0 1px rgb(0 229 255 / 0.42), 0 0 22px rgb(255 43 214 / 0.2);
+}
+
+html[data-theme="neon"] .app-navigation__group { --navigation-accent: #00e5ff; }
+html[data-theme="neon"] .app-navigation__group[data-accent="1"] { --navigation-accent: #9b8bff; }
+html[data-theme="neon"] .app-navigation__group[data-accent="2"] { --navigation-accent: #ff2bd6; }
+html[data-theme="neon"] .app-navigation__group[data-accent="3"] { --navigation-accent: #ff3d5a; }
+html[data-theme="neon"] .app-navigation__group[data-accent="4"] { --navigation-accent: #ffe600; }
+html[data-theme="neon"] .app-navigation__group[data-accent="5"] { --navigation-accent: #39ff88; }
+
+html[data-theme="neon"] .app-navigation__group > .app-navigation__section,
+html[data-theme="neon"] .app-navigation__group .app-navigation__icon {
+    color: var(--navigation-accent);
+}
+
+html[data-theme="neon"] .app-navigation__group .app-navigation__link.is-active {
+    color: var(--color-text);
+    background: color-mix(in srgb, var(--navigation-accent) 14%, transparent);
+    border-color: color-mix(in srgb, var(--navigation-accent) 42%, transparent);
+    box-shadow: inset 3px 0 var(--navigation-accent), 0 0 14px color-mix(in srgb, var(--navigation-accent) 10%, transparent);
+}
+
+html[data-theme="neon"] .content-card,
+html[data-theme="neon"] .detail-panel,
+html[data-theme="neon"] .table-panel,
+html[data-theme="neon"] .server-summary,
+html[data-theme="neon"] .overview-card,
+html[data-theme="neon"] .summary-item {
+    box-shadow: var(--shadow-small);
+}
+
+html[data-theme="neon"] .overview-card,
+html[data-theme="neon"] .summary-item {
+    border-top-color: #ff2bd6;
+}
+
+html[data-theme="neon"] .overview-card:nth-child(3n + 2),
+html[data-theme="neon"] .summary-item:nth-child(3n + 2) { border-top-color: #00e5ff; }
+html[data-theme="neon"] .overview-card:nth-child(3n),
+html[data-theme="neon"] .summary-item:nth-child(3n) { border-top-color: #ffe600; }
+
+html[data-theme="neon"] .primary-button,
+html[data-theme="neon"] .app-header__button:hover {
+    box-shadow: 0 0 15px rgb(0 229 255 / 0.2);
+}
+
+html[data-theme="neon"] .danger-button {
+    box-shadow: 0 0 14px rgb(255 61 90 / 0.17);
+}
+
+html[data-theme="neon"] input:focus,
+html[data-theme="neon"] select:focus,
+html[data-theme="neon"] textarea:focus {
+    box-shadow: 0 0 0 1px rgb(0 229 255 / 0.24), 0 0 15px rgb(0 229 255 / 0.1);
+}
+
+html[data-theme="neon"] .terminal-panel,
+html[data-theme="neon"] .update-terminal {
+    border-color: rgb(57 255 136 / 0.38);
+    box-shadow: inset 0 0 2rem rgb(0 0 0 / 0.36), 0 0 18px rgb(57 255 136 / 0.07);
+}

@@ -14,8 +14,17 @@ import (
 )
 
 type Store struct {
-	database *sql.DB
-	path     string
+	database  *sql.DB
+	path      string
+	secretKey []byte
+}
+
+func (s *Store) SetSecretKey(key []byte) error {
+	if len(key) != 32 {
+		return errors.New("secret key must contain 32 bytes")
+	}
+	s.secretKey = append([]byte(nil), key...)
+	return nil
 }
 
 type User struct {

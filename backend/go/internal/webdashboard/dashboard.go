@@ -31,6 +31,7 @@ type Information struct {
 
 type Process struct {
 	PID, User, State, StateLabel, Status, CPU, MemoryPercent, Memory, Elapsed, Name string
+	Description                                                                     string
 	PIDValue, MemoryBytes, ElapsedSeconds                                           int64
 	CPUPercentValue, MemoryPercentValue                                             float64
 }
@@ -42,12 +43,13 @@ type ProcessSnapshot struct {
 }
 
 type Snapshot struct {
-	Hostname    string
-	System      string
-	Kernel      string
-	Uptime      string
-	Information []Information
-	Cards       []Card
+	Hostname      string
+	System        string
+	Kernel        string
+	Uptime        string
+	UptimeSeconds int64
+	Information   []Information
+	Cards         []Card
 }
 
 type Collector struct {
@@ -106,7 +108,7 @@ func (c *Collector) Processes(ctx context.Context) (ProcessSnapshot, error) {
 			StateLabel: label, Status: status, CPU: formatPercent(number(item["cpu_percent"])),
 			CPUPercentValue: number(item["cpu_percent"]), MemoryPercent: formatPercent(number(item["memory_percent"])), MemoryPercentValue: number(item["memory_percent"]),
 			Memory: formatBytes(integer(item["memory_bytes"])), MemoryBytes: integer(item["memory_bytes"]),
-			Elapsed: formatProcessDuration(integer(item["elapsed_seconds"])), ElapsedSeconds: integer(item["elapsed_seconds"]), Name: text(item["name"], "—"),
+			Elapsed: formatProcessDuration(integer(item["elapsed_seconds"])), ElapsedSeconds: integer(item["elapsed_seconds"]), Name: text(item["name"], "—"), Description: text(item["description"], ""),
 		})
 	}
 	return snapshot, nil
@@ -236,6 +238,7 @@ func systemSnapshot(item collectionResult) Snapshot {
 	snapshot.System = text(host["pretty_name"], snapshot.System)
 	snapshot.Kernel = text(host["kernel"], "—") + " · " + text(host["architecture"], "—")
 	snapshot.Uptime = formatDuration(integer(host["uptime_seconds"]))
+	snapshot.UptimeSeconds = integer(host["uptime_seconds"])
 	version := text(host["version"], text(host["version_id"], "Non renseignée"))
 	snapshot.Information = []Information{
 		{Label: "Nom d’hôte", Value: snapshot.Hostname},

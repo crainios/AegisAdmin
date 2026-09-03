@@ -3,40 +3,95 @@ set -eu
 
 usage() {
     printf '%s\n' \
-        'Usage : aegisadmin initialize|migrate|status|version|web-status'
+        'Usage : aegisadmin initialize|mysql-setup|migrate|status|version|web-status'
 }
 
-run_admin_command() {
+require_root() {
     if [ "$(id -u)" -ne 0 ]; then
         printf '%s\n' 'Cette commande doit être exécutée avec sudo.' >&2
         exit 1
     fi
-    exec /usr/libexec/aegisadmin/aegisadmin-admin "$1"
 }
 
-initialize_root() {
-    if [ "$(id -u)" -ne 0 ]; then
-        printf '%s\n' 'Cette commande doit être exécutée avec sudo.' >&2
-        exit 1
+normalize_database_permissions() {
+    install -d -o aegisadmin -g aegisadmin-web -m 2770 \
+        /var/lib/aegisadmin/database \
+        /var/lib/aegisadmin/database/backups
+    find /var/lib/aegisadmin/database -maxdepth 1 -type f \
+        \( -name '*.sqlite' -o -name '*.sqlite-wal' -o -name '*.sqlite-shm' \) \
+        -exec chown aegisadmin:aegisadmin-web {} + \
+        -exec chmod 0660 {} +
+}
+
+stop_web_for_database_maintenance() {
+    WEB_SHOULD_RESTART=false
+    if systemctl is-enabled --quiet aegisadmin-web.service || \
+       systemctl is-active --quiet aegisadmin-web.service; then
+        WEB_SHOULD_RESTART=true
     fi
-    web_was_active=false
-    if systemctl is-active --quiet aegisadmin-web.service; then
-        web_was_active=true
-        systemctl stop aegisadmin-web.service
+    # L’arrêt est volontairement inconditionnel : is-active peut être faux
+    # pendant une boucle en état activating/failed.
+    systemctl stop aegisadmin-web.service >/dev/null 2>&1 || true
+}
+
+restore_web_after_database_maintenance() {
+    if ! normalize_database_permissions; then
+        printf '%s\n' 'Les permissions de la base SQLite n’ont pas pu être restaurées.' >&2
+        return 1
     fi
+    if [ "${WEB_SHOULD_RESTART}" = true ]; then
+        systemctl reset-failed aegisadmin-web.service >/dev/null 2>&1 || true
+        if ! systemctl start aegisadmin-web.service; then
+            printf '%s\n' 'Le service web AegisAdmin n’a pas pu être redémarré.' >&2
+            return 1
+        fi
+    fi
+    return 0
+}
+
+run_migration() {
+    require_root
+    stop_web_for_database_maintenance
     set +e
-    /usr/libexec/aegisadmin/aegisadmin-admin initialize-root
+    /usr/libexec/aegisadmin/aegisadmin-admin migrate
     status=$?
     set -e
-    if [ "${web_was_active}" = true ]; then
-        systemctl start aegisadmin-web.service
+    if ! restore_web_after_database_maintenance && [ "${status}" -eq 0 ]; then
+        status=1
     fi
     return "${status}"
 }
 
+initialize_root() {
+    require_root
+    stop_web_for_database_maintenance
+    set +e
+    /usr/libexec/aegisadmin/aegisadmin-admin initialize-root
+    status=$?
+    if [ "${status}" -eq 0 ] && { \
+       systemctl is-active --quiet mysql.service || \
+       systemctl is-active --quiet mariadb.service || \
+       systemctl is-active --quiet mysqld.service; }; then
+        printf '%s\n' 'Configuration de la supervision MySQL/MariaDB…'
+        /usr/libexec/aegisadmin/aegisadmin-admin configure-mysql
+        status=$?
+    fi
+    set -e
+    if ! restore_web_after_database_maintenance && [ "${status}" -eq 0 ]; then
+        status=1
+    fi
+    return "${status}"
+}
+
+configure_mysql() {
+    require_root
+    exec /usr/libexec/aegisadmin/aegisadmin-admin configure-mysql
+}
+
 case "${1:-}" in
     initialize) initialize_root ;;
-    migrate) run_admin_command migrate ;;
+    mysql-setup) configure_mysql ;;
+    migrate) run_migration ;;
     status) exec systemctl status aegisadmin-system.service ;;
     web-status) exec systemctl status aegisadmin-web.service ;;
     version) exec /usr/bin/aegisadmin-system-go --version ;;

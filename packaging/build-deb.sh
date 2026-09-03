@@ -57,7 +57,6 @@ install -d "${PACKAGE_ROOT}/DEBIAN" \
     "${PACKAGE_ROOT}/usr/share/aegisadmin" \
     "${PACKAGE_ROOT}/usr/share/doc/aegisadmin" \
     "${PACKAGE_ROOT}/etc/aegisadmin-system" \
-    "${PACKAGE_ROOT}/etc/apache2/sites-available" \
     "${PACKAGE_ROOT}/etc/sudoers.d" \
     "${PACKAGE_ROOT}/lib/systemd/system"
 
@@ -72,6 +71,10 @@ readonly LINKER_FLAGS="-s -w -buildid= -X aegisadmin/backend/internal/buildinfo.
         -o "${PACKAGE_ROOT}/usr/libexec/aegisadmin/aegisadmin-web" ./cmd/aegisadmin-web
     CGO_ENABLED=0 GOOS=linux GOARCH="${GO_ARCH}" go build -trimpath -ldflags "${LINKER_FLAGS}" \
         -o "${PACKAGE_ROOT}/usr/libexec/aegisadmin/aegisadmin-admin" ./cmd/aegisadmin-admin
+    CGO_ENABLED=0 GOOS=linux GOARCH="${GO_ARCH}" go build -trimpath -ldflags "${LINKER_FLAGS}" \
+        -o "${PACKAGE_ROOT}/usr/libexec/aegisadmin/aegisadmin-updater" ./cmd/aegisadmin-updater
+    CGO_ENABLED=0 GOOS=linux GOARCH="${GO_ARCH}" go build -trimpath -ldflags "${LINKER_FLAGS}" \
+        -o "${PACKAGE_ROOT}/usr/libexec/aegisadmin/aegisadmin-backup" ./cmd/aegisadmin-backup
 )
 
 install -m 0644 "${PROJECT_ROOT}/VERSION" "${PACKAGE_ROOT}/usr/share/aegisadmin/VERSION"
@@ -84,6 +87,7 @@ install -m 0750 "${PROJECT_ROOT}/backend/libexec/cron-runner.py" "${PACKAGE_ROOT
 install -m 0750 "${PROJECT_ROOT}/backend/libexec/certbot-runner.py" "${PACKAGE_ROOT}/usr/libexec/aegisadmin/certbot-runner.py"
 install -m 0644 "${DEBIAN_SOURCE}/aegisadmin-system.service" "${PACKAGE_ROOT}/lib/systemd/system/aegisadmin-system.service"
 install -m 0644 "${DEBIAN_SOURCE}/aegisadmin-web.service" "${PACKAGE_ROOT}/lib/systemd/system/aegisadmin-web.service"
+install -m 0644 "${DEBIAN_SOURCE}/aegisadmin-updater@.service" "${PACKAGE_ROOT}/lib/systemd/system/aegisadmin-updater@.service"
 install -m 0640 "${DEBIAN_SOURCE}/web-server" "${PACKAGE_ROOT}/etc/aegisadmin-system/web-server"
 install -m 0640 "${DEBIAN_SOURCE}/admin-web" "${PACKAGE_ROOT}/usr/share/aegisadmin/defaults/admin-web"
 install -m 0644 "${DEBIAN_SOURCE}/aegisadmin-apache.conf" "${PACKAGE_ROOT}/usr/share/aegisadmin/defaults/aegisadmin-admin.conf"
@@ -110,6 +114,8 @@ chmod 0755 "${PACKAGE_ROOT}/usr/bin/aegisadmin" "${PACKAGE_ROOT}/usr/bin/aegisad
 chmod 0750 "${PACKAGE_ROOT}/usr/libexec/aegisadmin/aegisadmin-daemon"
 chmod 0755 "${PACKAGE_ROOT}/usr/libexec/aegisadmin/aegisadmin-web"
 chmod 0750 "${PACKAGE_ROOT}/usr/libexec/aegisadmin/aegisadmin-admin"
+chmod 0750 "${PACKAGE_ROOT}/usr/libexec/aegisadmin/aegisadmin-updater"
+chmod 0750 "${PACKAGE_ROOT}/usr/libexec/aegisadmin/aegisadmin-backup"
 chmod 0750 "${PACKAGE_ROOT}/usr/libexec/aegisadmin/cron-runner.py" "${PACKAGE_ROOT}/usr/libexec/aegisadmin/certbot-runner.py"
 find "${PACKAGE_ROOT}/etc/aegisadmin-system" -maxdepth 1 -type f -exec chmod 0640 {} +
 chmod 0440 "${PACKAGE_ROOT}/etc/sudoers.d/aegisadmin"

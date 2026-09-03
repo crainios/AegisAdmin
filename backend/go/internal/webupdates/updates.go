@@ -52,6 +52,7 @@ type ComposerSite struct {
 	CompatibleCount    int                `json:"compatible_update_count"`
 	SecurityIssueCount int                `json:"security_issue_count"`
 	SecurityStatus     string             `json:"security_status"`
+	SecurityMessage    string             `json:"security_message"`
 	Packages           []ComposerPackage  `json:"packages"`
 	SecurityAdvisories []ComposerAdvisory `json:"security_advisories"`
 	Message            string             `json:"message"`

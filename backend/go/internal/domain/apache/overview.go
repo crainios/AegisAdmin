@@ -11,6 +11,16 @@ type overviewResult struct {
 }
 
 func (b *LinuxBackend) overview(ctx context.Context) (map[string]any, *Error) {
+	if b.installed != nil && !b.installed(b.apacheBinary) {
+		return map[string]any{
+			"installed":  false,
+			"info":       map[string]any{"version": "", "built": ""},
+			"configtest": map[string]any{"valid": false, "message": "Apache n’est pas installé sur ce serveur."},
+			"vhosts":     map[string]any{"virtual_hosts": []any{}},
+			"sites":      map[string]any{"sites": []any{}},
+			"modules":    map[string]any{"modules": []any{}},
+		}, nil
+	}
 	var waitGroup sync.WaitGroup
 	results := make(map[string]overviewResult, 5)
 	var resultsMu sync.Mutex
@@ -45,7 +55,8 @@ func (b *LinuxBackend) overview(ctx context.Context) (map[string]any, *Error) {
 
 	waitGroup.Wait()
 
-	data := make(map[string]any, len(results))
+	data := make(map[string]any, len(results)+1)
+	data["installed"] = true
 	for _, name := range []string{"info", "configtest", "vhosts", "sites", "modules"} {
 		result := results[name]
 		if result.err != nil {

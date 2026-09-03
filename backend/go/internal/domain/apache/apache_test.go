@@ -57,7 +57,7 @@ func TestOverviewCollectsApacheState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data) != 5 || data["info"].(map[string]any)["version"] != "Apache/2.4.64 (Debian)" {
+	if len(data) != 6 || data["installed"] != true || data["info"].(map[string]any)["version"] != "Apache/2.4.64 (Debian)" {
 		t.Fatalf("unexpected overview: %#v", data)
 	}
 	if data["configtest"].(map[string]any)["valid"] != true {

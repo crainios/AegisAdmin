@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -148,6 +149,8 @@ type CronProvider interface {
 	CronSnapshot(context.Context) (webcron.Snapshot, error)
 	CronAction(context.Context, string, string, string, string, string) (string, error)
 	CronResult(context.Context, string) (webcron.ExecutionResult, error)
+	CronBackupCreate(context.Context, webcron.BackupRequest) error
+	CronBackupAction(context.Context, string, string) (string, error)
 }
 type CertbotProvider interface {
 	Snapshot(context.Context) (webcertbot.Snapshot, error)
@@ -183,6 +186,8 @@ type NavigationAdministrationStore interface {
 type SettingsStore interface {
 	Settings(context.Context) (authstore.ApplicationSettings, error)
 	UpdateSettings(context.Context, authstore.ApplicationSettings) error
+	SMTPSettings(context.Context) (authstore.SMTPSettings, error)
+	UpdateSMTPSettings(context.Context, authstore.SMTPSettings, *string) error
 	BackupDatabase(context.Context) ([]byte, error)
 	RestoreDatabase(context.Context, []byte) error
 }
@@ -340,6 +345,8 @@ func Handler(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /firewall/{action}", app.firewallAction)
 	mux.HandleFunc("GET /cron", app.cron)
 	mux.HandleFunc("POST /cron/{action}", app.cronAction)
+	mux.HandleFunc("POST /cron/backup/create", app.cronBackupCreate)
+	mux.HandleFunc("POST /cron/backup/{action}", app.cronBackupAction)
 	mux.HandleFunc("GET /cron/executions/{id}", app.cronResult)
 	mux.HandleFunc("GET /certbot", app.certbot)
 	mux.HandleFunc("GET /certbot/", redirectCanonical("/certbot"))
@@ -368,6 +375,7 @@ func Handler(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /modules/reorder", app.reorderNavigation)
 	mux.HandleFunc("GET /setting", app.settings)
 	mux.HandleFunc("POST /setting", app.updateSettings)
+	mux.HandleFunc("POST /setting/smtp", app.updateSMTPSettings)
 	mux.HandleFunc("POST /setting/admin-access", app.updateAdminAccess)
 	mux.HandleFunc("POST /setting/database/backup", app.backupDatabase)
 	mux.HandleFunc("POST /setting/database/restore", app.restoreDatabase)
@@ -537,11 +545,7 @@ func (a *application) dashboard(response http.ResponseWriter, request *http.Requ
 	page := strings.NewReplacer(
 		"{{USER}}", html.EscapeString(user.Login),
 		"{{CSRF}}", html.EscapeString(session.CSRFToken),
-		"{{HOSTNAME}}", html.EscapeString(snapshot.Hostname),
-		"{{SYSTEM}}", html.EscapeString(snapshot.System),
-		"{{KERNEL}}", html.EscapeString(snapshot.Kernel),
-		"{{UPTIME}}", html.EscapeString(snapshot.Uptime),
-		"{{SYSTEM_INFORMATION}}", renderSystemInformation(snapshot.Information),
+		"{{SYSTEM_INFORMATION}}", renderSystemInformation(snapshot.Information, snapshot.UptimeSeconds),
 		"{{RESOURCES}}", renderOverview(filterDashboardCards(snapshot.Cards, false)),
 		"{{SUPERVISION}}", renderOverview(filterDashboardCards(snapshot.Cards, true)),
 	).Replace(a.dashboardPage)
@@ -648,19 +652,28 @@ func renderProcesses(processes []webdashboard.Process) string {
 		if status != "success" && status != "warning" && status != "danger" {
 			status = "neutral"
 		}
-		result.WriteString(`<tr><td data-sort-value="` + strconv.FormatInt(process.PIDValue, 10) + `">` + html.EscapeString(process.PID) + `</td><th data-sort-value="` + html.EscapeString(strings.ToLower(process.Name)) + `">` + html.EscapeString(process.Name) + `</th><td data-sort-value="` + html.EscapeString(strings.ToLower(process.User)) + `">` + html.EscapeString(process.User) + `</td><td data-sort-value="` + html.EscapeString(strings.ToLower(process.StateLabel+" "+process.State)) + `"><span class="status-badge status-badge--` + status + `">` + html.EscapeString(process.StateLabel+" · "+process.State) + `</span></td><td data-sort-value="` + strconv.FormatFloat(process.CPUPercentValue, 'f', -1, 64) + `">` + html.EscapeString(process.CPU) + `</td><td data-sort-value="` + strconv.FormatFloat(process.MemoryPercentValue, 'f', -1, 64) + `">` + html.EscapeString(process.MemoryPercent) + `</td><td data-sort-value="` + strconv.FormatInt(process.MemoryBytes, 10) + `">` + html.EscapeString(process.Memory) + `</td><td data-sort-value="` + strconv.FormatInt(process.ElapsedSeconds, 10) + `">` + html.EscapeString(process.Elapsed) + `</td></tr>`)
+		name := html.EscapeString(process.Name)
+		if description := process.Description; description != "" {
+			label := html.EscapeString(process.Name + " : " + description)
+			name = `<span class="process-name process-name--described" tabindex="0" title="` + html.EscapeString(description) + `" aria-label="` + label + `">` + name + `<span class="process-name__help" aria-hidden="true">?</span></span>`
+		}
+		result.WriteString(`<tr><td data-sort-value="` + strconv.FormatInt(process.PIDValue, 10) + `">` + html.EscapeString(process.PID) + `</td><th data-sort-value="` + html.EscapeString(strings.ToLower(process.Name)) + `">` + name + `</th><td data-sort-value="` + html.EscapeString(strings.ToLower(process.User)) + `">` + html.EscapeString(process.User) + `</td><td data-sort-value="` + html.EscapeString(strings.ToLower(process.StateLabel+" "+process.State)) + `"><span class="status-badge status-badge--` + status + `">` + html.EscapeString(process.StateLabel+" · "+process.State) + `</span></td><td data-sort-value="` + strconv.FormatFloat(process.CPUPercentValue, 'f', -1, 64) + `">` + html.EscapeString(process.CPU) + `</td><td data-sort-value="` + strconv.FormatFloat(process.MemoryPercentValue, 'f', -1, 64) + `">` + html.EscapeString(process.MemoryPercent) + `</td><td data-sort-value="` + strconv.FormatInt(process.MemoryBytes, 10) + `">` + html.EscapeString(process.Memory) + `</td><td data-sort-value="` + strconv.FormatInt(process.ElapsedSeconds, 10) + `">` + html.EscapeString(process.Elapsed) + `</td></tr>`)
 	}
 	return result.String()
 }
 
-func renderSystemInformation(information []webdashboard.Information) string {
+func renderSystemInformation(information []webdashboard.Information, uptimeSeconds int64) string {
 	if len(information) == 0 {
 		return `<p class="muted">Les informations générales du système ne sont pas disponibles.</p>`
 	}
 	var result strings.Builder
 	result.WriteString(`<dl class="detail-grid dashboard-information">`)
 	for _, item := range information {
-		result.WriteString(`<div><dt>` + html.EscapeString(item.Label) + `</dt><dd>` + html.EscapeString(item.Value) + `</dd></div>`)
+		attributes := ""
+		if item.Label == "Durée de fonctionnement" {
+			attributes = ` data-dashboard-uptime data-dashboard-uptime-seconds="` + strconv.FormatInt(uptimeSeconds, 10) + `"`
+		}
+		result.WriteString(`<div><dt>` + html.EscapeString(item.Label) + `</dt><dd` + attributes + `>` + html.EscapeString(item.Value) + `</dd></div>`)
 	}
 	result.WriteString(`<div class="dashboard-information__updates" data-dashboard-updates data-dashboard-updates-url="/updates/summary" aria-live="polite" aria-busy="true"><dt>Mises à jour</dt><dd><span data-dashboard-updates-value>Vérification en cours…</span><a href="/updates" data-dashboard-updates-link hidden>Consulter les mises à jour</a></dd></div>`)
 	result.WriteString(`</dl>`)
@@ -1066,7 +1079,7 @@ func renderNetworkInterfaces(interfaces []webnetwork.Interface, selected *webnet
 		}
 		result.WriteString(`<tr><td>`)
 		if item.ID == selectedID {
-			result.WriteString(`<strong>Sélectionnée</strong>`)
+			result.WriteString(`<span class="network-selected-button" aria-current="true">Sélectionnée</span>`)
 		} else {
 			result.WriteString(`<a class="secondary-link" href="/network?interface=` + url.QueryEscape(item.ID) + `">Afficher</a>`)
 		}
@@ -1381,6 +1394,9 @@ func (a *application) mysql(response http.ResponseWriter, request *http.Request)
 	if request.URL.Query().Get("result") == "restarted" {
 		notice = `<p class="notice notice--success">Le redémarrage du serveur de bases de données a été programmé.</p>`
 	}
+	for _, warning := range snapshot.Warnings {
+		notice += `<p class="notice notice--warning">` + html.EscapeString(warning) + `</p>`
+	}
 	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", notice, "{{RESTART}}", restart, "{{SERVER}}", renderMySQLServer(snapshot.Server), "{{METRICS}}", renderMySQLMetrics(snapshot.Metrics), "{{DATABASES}}", renderMySQLDatabases(snapshot.Databases)).Replace(a.mysqlPage)
 	writeHTML(response, page, http.StatusOK)
 }
@@ -1433,11 +1449,22 @@ func (a *application) mysqlMetrics(response http.ResponseWriter, request *http.R
 	writeJSON(response, metrics, http.StatusOK)
 }
 func renderMySQLServer(s webmysql.Server) string {
+	available := func(value string) string {
+		if strings.TrimSpace(value) == "" {
+			return "Indisponible"
+		}
+		return value
+	}
 	unit := "Non détecté"
 	if s.Service.Unit != nil {
 		unit = *s.Service.Unit
 	}
-	rows := [][2]string{{"Version", s.Product + " " + s.Version}, {"Nom d’hôte", s.Hostname}, {"Port", strconv.FormatInt(s.Port, 10)}, {"Socket", s.Socket}, {"Répertoire des données", s.DataDirectory}, {"Moteur par défaut", s.DefaultStorageEngine}, {"Service", unit}, {"Démarrage automatique", yesNo(s.Service.Enabled)}, {"État du service", s.Service.State}}
+	version := available(strings.TrimSpace(s.Product + " " + s.Version))
+	port := "Indisponible"
+	if s.Port > 0 {
+		port = strconv.FormatInt(s.Port, 10)
+	}
+	rows := [][2]string{{"Version", version}, {"Nom d’hôte", available(s.Hostname)}, {"Port", port}, {"Socket", available(s.Socket)}, {"Répertoire des données", available(s.DataDirectory)}, {"Moteur par défaut", available(s.DefaultStorageEngine)}, {"Service", unit}, {"Démarrage automatique", yesNo(s.Service.Enabled)}, {"État du service", available(s.Service.State)}}
 	var b strings.Builder
 	for _, r := range rows {
 		b.WriteString(`<div><dt>` + r[0] + `</dt><dd>` + html.EscapeString(r[1]) + `</dd></div>`)
@@ -1445,7 +1472,15 @@ func renderMySQLServer(s webmysql.Server) string {
 	return b.String()
 }
 func renderMySQLMetrics(m map[string]int64) string {
-	items := [][2]string{{"Connexions actives", strconv.FormatInt(m["threads_connected"], 10)}, {"Threads actifs", strconv.FormatInt(m["threads_running"], 10)}, {"Requêtes", formatFrenchInteger(m["queries"])}, {"Requêtes lentes", strconv.FormatInt(m["slow_queries"], 10)}}
+	metric := func(key string, format func(int64) string) string {
+		value, found := m[key]
+		if !found {
+			return "Indisponible"
+		}
+		return format(value)
+	}
+	decimal := func(value int64) string { return strconv.FormatInt(value, 10) }
+	items := [][2]string{{"Connexions actives", metric("threads_connected", decimal)}, {"Threads actifs", metric("threads_running", decimal)}, {"Requêtes", metric("queries", formatFrenchInteger)}, {"Requêtes lentes", metric("slow_queries", decimal)}}
 	var b strings.Builder
 	keys := []string{"threads_connected", "threads_running", "queries", "slow_queries"}
 	for index, i := range items {
@@ -1509,6 +1544,14 @@ func (a *application) tor(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, "Les informations Tor n’ont pas pu être chargées.", http.StatusServiceUnavailable)
 		return
 	}
+	if !s.Installed {
+		info := renderPairs([][2]string{{"État", "Tor n’est pas installé sur ce serveur."}})
+		config := `<span class="status-badge status-badge--neutral">Indisponible</span><p>Installez Tor pour accéder à sa configuration.</p>`
+		status := renderMetricPairs([][2]string{{"Amorçage", "Indisponible"}, {"Mémoire", "Indisponible"}, {"Tâches", "Indisponible"}, {"PID principal", "Indisponible"}})
+		page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", `<p class="notice">Le module reste disponible, mais Tor n’est pas installé sur ce serveur.</p>`, "{{INFO}}", info, "{{CONFIG}}", config, "{{ACTIONS}}", "", "{{INSTANCE_TITLE}}", "Service Tor", "{{STATUS}}", status, "{{ONIONS}}", renderOnions(nil)).Replace(a.torPage)
+		writeHTML(response, page, http.StatusOK)
+		return
+	}
 	canAct := level == "action" || level == "modify"
 	actions := ""
 	if canAct && s.Status.Exists {
@@ -1528,7 +1571,7 @@ func (a *application) tor(response http.ResponseWriter, request *http.Request) {
 	}
 	info := renderPairs([][2]string{{"Version", s.Info.Product + " " + s.Info.Version}, {"Configuration", s.Info.ConfigFile}, {"Service", s.Info.Service}, {"Unité", s.Info.Unit}})
 	status := renderMetricPairs([][2]string{{"Amorçage", bootstrap}, {"Mémoire", formatByteCount(s.Status.Memory)}, {"Tâches", strconv.FormatInt(s.Status.Tasks, 10)}, {"PID principal", strconv.FormatInt(s.Status.MainPID, 10)}})
-	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", notice, "{{INFO}}", info, "{{CONFIG}}", config, "{{ACTIONS}}", actions, "{{STATUS}}", status, "{{ONIONS}}", renderOnions(s.Services)).Replace(a.torPage)
+	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", notice, "{{INFO}}", info, "{{CONFIG}}", config, "{{ACTIONS}}", actions, "{{INSTANCE_TITLE}}", "Instance "+html.EscapeString(s.Info.Service), "{{STATUS}}", status, "{{ONIONS}}", renderOnions(s.Services)).Replace(a.torPage)
 	writeHTML(response, page, http.StatusOK)
 }
 func (a *application) torAction(response http.ResponseWriter, request *http.Request) {
@@ -1613,6 +1656,11 @@ func (a *application) apache(response http.ResponseWriter, request *http.Request
 	s, err := a.dependencies.Apache.ApacheSnapshot(ctx)
 	if err != nil {
 		http.Error(response, "Les informations Apache n’ont pas pu être chargées.", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.Installed && s.Version == "" {
+		page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", `<p class="notice">Apache n’est pas installé sur ce serveur. AegisAdmin utilise directement son serveur HTTPS Go.</p>`, "{{INFO}}", renderPairs([][2]string{{"Installation", "Non installé"}}), "{{CONFIG}}", `<span class="status-badge status-badge--neutral">Indisponible</span><p>Installez Apache pour gérer ses VirtualHosts.</p>`, "{{ACTIONS}}", "", "{{SUMMARY}}", renderMetricPairs([][2]string{{"VirtualHosts", "0"}, {"Sites", "0"}, {"Modules", "0"}, {"Sites actifs", "0"}}), "{{VHOSTS}}", renderVHosts(nil), "{{SITE_ACTIONS}}", renderApacheSites(nil, session.CSRFToken, false), "{{CREATE_SITE}}", "").Replace(a.apachePage)
+		writeHTML(response, page, http.StatusOK)
 		return
 	}
 	canAct := level == "action" || level == "modify"
@@ -1897,6 +1945,11 @@ func (a *application) fail2ban(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	token := html.EscapeString(session.CSRFToken)
+	if !s.Installed {
+		page := strings.NewReplacer("{{CSRF}}", token, "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", `<p class="notice">Le module reste disponible, mais Fail2ban n’est pas installé sur ce serveur.</p>`, "{{INFO}}", renderPairs([][2]string{{"État", "Fail2ban n’est pas installé sur ce serveur."}, {"Démarrage automatique", "Non"}, {"Prisons", "0"}}), "{{SERVICE_ACTIONS}}", "", "{{CONFIG}}", `<span class="status-badge status-badge--neutral">Indisponible</span><p>Installez Fail2ban pour accéder à sa configuration.</p>`, "{{JAIL_SELECTOR}}", renderJailSelector(nil, ""), "{{JAIL}}", "", "{{MODIFY_ACTIONS}}", "").Replace(a.fail2banPage)
+		writeHTML(response, page, http.StatusOK)
+		return
+	}
 	serviceActions := ""
 	if level == "action" || level == "modify" {
 		serviceActions = `<div class="header-actions"><form method="post" action="/fail2ban/reload"><input type="hidden" name="_token" value="` + token + `"><button class="primary-button">Recharger</button></form><form method="post" action="/fail2ban/restart"><input type="hidden" name="_token" value="` + token + `"><button class="danger-button">Redémarrer</button></form></div>`
@@ -2098,6 +2151,10 @@ func optionalBool(v *bool) string {
 	return yesNo(*v)
 }
 func renderFirewallRules(items []webfirewall.Rule, token string, modify bool) string {
+	return renderFirewallRulesWithServices(items, token, modify, readFirewallServices("/etc/services"))
+}
+
+func renderFirewallRulesWithServices(items []webfirewall.Rule, token string, modify bool, services map[string]string) string {
 	columns := 7
 	if modify {
 		columns++
@@ -2119,9 +2176,85 @@ func renderFirewallRules(items []webfirewall.Rule, token string, modify bool) st
 		if modify {
 			b.WriteString(`<td><form class="inline-form" method="post" action="/firewall/delete"><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="id" value="` + strconv.Itoa(i.ID) + `"><button class="danger-button">Supprimer</button></form></td>`)
 		}
-		b.WriteString(`<th>` + strconv.Itoa(i.ID) + `</th><td>` + html.EscapeString(i.Action) + `</td><td>` + html.EscapeString(i.Direction) + `</td><td>` + html.EscapeString(i.Protocol) + `</td><td>` + html.EscapeString(strings.Join(i.Ports, ", ")) + `</td><td>` + html.EscapeString(i.Source) + `</td><td>` + html.EscapeString(i.Family) + `</td></tr>`)
+		b.WriteString(`<th>` + strconv.Itoa(i.ID) + `</th><td>` + html.EscapeString(i.Action) + `</td><td>` + html.EscapeString(i.Direction) + `</td><td>` + html.EscapeString(i.Protocol) + `</td><td>` + html.EscapeString(formatFirewallRuleTarget(i, services)) + `</td><td>` + html.EscapeString(i.Source) + `</td><td>` + html.EscapeString(i.Family) + `</td></tr>`)
 	}
 	return b.String()
+}
+
+func formatFirewallRuleTarget(rule webfirewall.Rule, services map[string]string) string {
+	if ports := formatFirewallPorts(rule.Ports, rule.Protocol, services); ports != "" {
+		return ports
+	}
+	destination := strings.TrimSpace(rule.Destination)
+	if destination != "" && !strings.EqualFold(destination, "any") {
+		return destination
+	}
+	return "—"
+}
+
+func readFirewallServices(path string) map[string]string {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]string{}
+	}
+	return parseFirewallServices(string(content))
+}
+
+func parseFirewallServices(content string) map[string]string {
+	services := map[string]string{}
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		port, protocol, ok := strings.Cut(strings.ToLower(fields[1]), "/")
+		if !ok || (protocol != "tcp" && protocol != "udp") {
+			continue
+		}
+		if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
+			continue
+		}
+		key := port + "/" + protocol
+		if _, exists := services[key]; !exists {
+			services[key] = strings.ToLower(fields[0])
+		}
+	}
+	return services
+}
+
+func formatFirewallPorts(ports []string, protocol string, services map[string]string) string {
+	formatted := make([]string, 0, len(ports))
+	for _, expression := range ports {
+		for _, raw := range strings.Split(expression, ",") {
+			port := strings.TrimSpace(raw)
+			label := firewallPortService(port, protocol, services)
+			if label != "" {
+				formatted = append(formatted, port+" ("+label+")")
+			} else {
+				formatted = append(formatted, port)
+			}
+		}
+	}
+	return strings.Join(formatted, ", ")
+}
+
+func firewallPortService(port, protocol string, services map[string]string) string {
+	if _, err := strconv.Atoi(port); err != nil {
+		return ""
+	}
+	protocol = strings.ToLower(protocol)
+	if protocol == "tcp" || protocol == "udp" {
+		return services[port+"/"+protocol]
+	}
+	labels := []string{}
+	for _, candidate := range []string{"tcp", "udp"} {
+		label := services[port+"/"+candidate]
+		if label != "" && !slices.Contains(labels, label) {
+			labels = append(labels, label)
+		}
+	}
+	return strings.Join(labels, "/")
 }
 
 func firewallRulePort(rule webfirewall.Rule) int {
@@ -2178,7 +2311,7 @@ func (a *application) cron(response http.ResponseWriter, request *http.Request) 
 			}
 			options.WriteString(`<option value="` + html.EscapeString(item.Name) + `">` + html.EscapeString(label) + `</option>`)
 		}
-		create = `<article class="content-card"><h2>Créer une tâche utilisateur</h2><form class="selector-form" method="post" action="/cron/create"><input type="hidden" name="_token" value="` + token + `"><label>Utilisateur</label><select name="user" required>` + options.String() + `</select><label>Expression Cron</label><input name="schedule" value="*/5 * * * *" required><label>Commande</label><input name="command" required><button class="primary-button">Créer la tâche</button></form></article>`
+		create = renderBackupLibrary(token, options.String())
 	}
 	notice := ""
 	if execution := request.URL.Query().Get("execution"); execution != "" {
@@ -2197,6 +2330,102 @@ func (a *application) cron(response http.ResponseWriter, request *http.Request) 
 		"{{JOBS}}", renderCronJobs(snapshot.Jobs, token, level),
 	).Replace(a.cronPage)
 	writeHTML(response, page, http.StatusOK)
+}
+
+func renderBackupLibrary(token, userOptions string) string {
+	months := []string{"Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"}
+	weekdays := []string{"Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"}
+	return `<section class="content-card backup-library"><h2>Bibliothèque de tâches Cron</h2><p class="muted">Choisissez un modèle ou créez une tâche personnalisée.</p><div class="cron-library-actions"><label class="library-selector">Type de tâche<select data-backup-template-select><option value="">Sélectionner un modèle</option><optgroup label="Sauvegardes"><option value="mysql">MySQL / MariaDB</option><option value="apache">Configuration Apache</option><option value="sites">Sites de /var/www</option></optgroup></select></label><button class="secondary-button" type="button" data-cron-create-open>Créer une tâche utilisateur</button></div>` +
+		`<dialog class="action-dialog action-dialog--wide" data-cron-create-dialog><form method="post" action="/cron/create" data-cron-create-form><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="task_id" data-cron-task-id><input type="hidden" name="schedule" value="0 2 * * *" data-cron-schedule><h2 data-cron-form-title>Créer une tâche utilisateur</h2><label>Utilisateur<select name="user" required data-cron-user>` + userOptions + `</select></label><fieldset class="cron-schedule-builder"><legend>Périodicité</legend><label>Mode<select data-cron-mode><option value="visual">Sélection interactive</option><option value="custom">Expression avancée</option></select></label><div class="cron-choice-groups" data-cron-visual>` + cronChoiceGroup("Minutes", "minute", 0, 59, nil, []int{0}) + cronChoiceGroup("Heures", "hour", 0, 23, nil, []int{2}) + cronChoiceGroup("Jours du mois", "monthday", 1, 31, nil, nil) + cronChoiceGroup("Mois", "month", 1, 12, months, nil) + cronChoiceGroup("Jours de la semaine", "weekday", 0, 6, weekdays, nil) + `</div><label data-cron-custom-field hidden>Expression Cron<input value="0 2 * * *" data-cron-custom></label><p class="muted" data-cron-day-warning hidden>Lorsque les jours du mois et de la semaine sont tous deux limités, Cron exécute généralement la tâche si l’un des deux critères correspond.</p><p class="cron-schedule-preview">Expression générée : <code data-cron-schedule-preview>0 2 * * *</code></p></fieldset><label>Commande<input name="command" required autocomplete="off" data-cron-command></label><div class="form-actions"><button class="primary-button" data-cron-submit>Créer la tâche</button><button class="secondary-button" type="button" data-cron-create-close>Annuler</button></div></form></dialog>` +
+		`<dialog class="action-dialog action-dialog--wide" data-backup-dialog><form method="post" action="/cron/backup/create" class="selector-form"><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="kind" data-backup-kind><h2 data-backup-title>Nouvelle sauvegarde</h2><label>Nom<input name="name" maxlength="64" required></label><label>Source<input name="source" data-backup-source required></label><label>Fréquence<select name="schedule" required><option value="0 2 * * *">Chaque nuit à 2 h</option><option value="0 3 * * 0">Chaque dimanche à 3 h</option><option value="0 4 1 * *">Chaque mois à 4 h</option></select></label><label>Stockage temporaire local<input name="destination" value="/var/backups/aegisadmin" required></label><fieldset><legend>Destination rsync/SSH</legend><label>Serveur<input name="remote_host" required></label><label>Utilisateur SSH<input name="remote_user" required></label><label>Port SSH<input name="remote_port" type="number" min="1" max="65535" value="22" required></label><label>Répertoire distant<input name="remote_path" value="/var/backups/aegisadmin" required></label><label>Clé SSH privée<input name="ssh_key" value="/etc/aegisadmin-system/backup-ssh/id_ed25519" required></label></fieldset><label>Conservation locale (jours)<input name="retention_days" type="number" min="0" max="3650" value="2" required></label><label class="checkbox-line"><input type="checkbox" name="remove_local" value="true"> Supprimer la copie locale après un transfert réussi</label><div class="form-actions"><button class="primary-button">Créer la tâche</button><button class="secondary-button" type="button" data-backup-close>Annuler</button></div></form></dialog></section>`
+}
+
+func cronChoiceGroup(title, part string, first, last int, labels []string, selected []int) string {
+	chosen := map[int]bool{}
+	for _, value := range selected {
+		chosen[value] = true
+	}
+	var result strings.Builder
+	result.WriteString(`<fieldset class="cron-choice-group"><legend>` + title + `</legend><p class="muted">Aucune sélection = toutes les valeurs</p><div class="cron-choice-grid">`)
+	for value := first; value <= last; value++ {
+		label := strconv.Itoa(value)
+		if len(labels) > value-first {
+			label = labels[value-first]
+		}
+		checked := ""
+		if chosen[value] {
+			checked = " checked"
+		}
+		result.WriteString(`<label><input type="checkbox" value="` + strconv.Itoa(value) + `" data-cron-part="` + part + `"` + checked + `><span>` + label + `</span></label>`)
+	}
+	result.WriteString(`</div><button class="text-button" type="button" data-cron-clear="` + part + `">Tout effacer</button></fieldset>`)
+	return result.String()
+}
+
+func (a *application) cronBackupCreate(response http.ResponseWriter, request *http.Request) {
+	session, user, found := a.authenticatedUser(response, request)
+	if !found {
+		return
+	}
+	level, granted, ok := a.modulePermission(response, request, user, "cron")
+	if !ok {
+		return
+	}
+	if !granted || level != "modify" {
+		http.Error(response, "Accès interdit.", http.StatusForbidden)
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, 32*1024)
+	if err := request.ParseForm(); err != nil || !a.dependencies.Sessions.ValidateCSRF(session.ID, request.PostForm.Get("_token")) {
+		http.Error(response, "La requête est invalide.", http.StatusBadRequest)
+		return
+	}
+	remove := "false"
+	if request.PostForm.Get("remove_local") == "true" {
+		remove = "true"
+	}
+	input := webcron.BackupRequest{Name: request.PostForm.Get("name"), Kind: request.PostForm.Get("kind"), Source: request.PostForm.Get("source"), Destination: request.PostForm.Get("destination"), Schedule: request.PostForm.Get("schedule"), RemoteHost: request.PostForm.Get("remote_host"), RemoteUser: request.PostForm.Get("remote_user"), RemotePort: request.PostForm.Get("remote_port"), RemotePath: request.PostForm.Get("remote_path"), SSHKey: request.PostForm.Get("ssh_key"), RetentionDays: request.PostForm.Get("retention_days"), RemoveLocal: remove}
+	ctx, cancel := context.WithTimeout(request.Context(), 20*time.Second)
+	defer cancel()
+	if err := a.dependencies.Cron.CronBackupCreate(ctx, input); err != nil {
+		http.Error(response, "La tâche de sauvegarde n’a pas pu être créée : "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	http.Redirect(response, request, "/cron?result=backup-create", http.StatusSeeOther)
+}
+
+func (a *application) cronBackupAction(response http.ResponseWriter, request *http.Request) {
+	session, user, found := a.authenticatedUser(response, request)
+	if !found {
+		return
+	}
+	level, granted, ok := a.modulePermission(response, request, user, "cron")
+	if !ok {
+		return
+	}
+	action := request.PathValue("action")
+	allowed := granted && (level == "modify" || (level == "action" && action == "run"))
+	if !allowed || (action != "run" && action != "delete") {
+		http.Error(response, "Accès interdit.", http.StatusForbidden)
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, 4096)
+	if err := request.ParseForm(); err != nil || !a.dependencies.Sessions.ValidateCSRF(session.ID, request.PostForm.Get("_token")) {
+		http.Error(response, "La requête est invalide.", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 20*time.Second)
+	defer cancel()
+	execution, err := a.dependencies.Cron.CronBackupAction(ctx, action, request.PostForm.Get("task_id"))
+	if err != nil {
+		http.Error(response, "L’action de sauvegarde a échoué : "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	if action == "run" {
+		http.Redirect(response, request, "/cron?execution="+url.QueryEscape(execution), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(response, request, "/cron?result=backup-delete", http.StatusSeeOther)
 }
 
 func (a *application) cronAction(response http.ResponseWriter, request *http.Request) {
@@ -2284,6 +2513,7 @@ func renderCronJobs(items []webcron.Job, token, level string) string {
 	}
 	var result strings.Builder
 	for _, item := range items {
+		backupID := backupTaskID(item.Command)
 		state, class := "Suspendue", "warning"
 		if item.Enabled {
 			state, class = "Active", "success"
@@ -2291,7 +2521,13 @@ func renderCronJobs(items []webcron.Job, token, level string) string {
 		result.WriteString(`<tr><td><span class="status-badge status-badge--` + class + `">` + state + `</span></td>`)
 		if level == "action" || level == "modify" {
 			result.WriteString(`<td>`)
-			if item.Editable {
+			if backupID != "" {
+				result.WriteString(`<select class="cron-action-select" data-backup-action data-csrf="` + token + `" data-task-id="` + backupID + `"><option value="">Action</option><option value="run">Exécuter</option>`)
+				if level == "modify" {
+					result.WriteString(`<option value="delete">Supprimer</option>`)
+				}
+				result.WriteString(`</select>`)
+			} else if item.Editable {
 				result.WriteString(`<select class="cron-action-select" aria-label="Action pour ` + html.EscapeString(item.User) + `" data-cron-action data-csrf="` + token + `" data-user="` + html.EscapeString(item.User) + `" data-task-id="` + html.EscapeString(item.ID) + `" data-schedule="` + html.EscapeString(item.Schedule) + `" data-command="` + html.EscapeString(item.Command) + `"><option value="">Action</option>`)
 				if level == "modify" {
 					result.WriteString(`<option value="edit">Modifier</option>`)
@@ -2319,6 +2555,19 @@ func renderCronJobs(items []webcron.Job, token, level string) string {
 	return result.String()
 }
 
+func backupTaskID(command string) string {
+	const prefix = "/usr/libexec/aegisadmin/aegisadmin-backup "
+	trimmed := strings.TrimSpace(command)
+	if !strings.HasPrefix(trimmed, prefix) {
+		return ""
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+	if !regexp.MustCompile(`^[a-f0-9-]{36}$`).MatchString(value) {
+		return ""
+	}
+	return value
+}
+
 func (a *application) logout(response http.ResponseWriter, request *http.Request) {
 	session, found := a.requestSession(request)
 	if !found || session.State != websession.StateAuthenticated {
@@ -2342,7 +2591,11 @@ func (a *application) logout(response http.ResponseWriter, request *http.Request
 		}
 		cancel()
 	}
-	a.invalidate(response, session.ID)
+	if err := a.dependencies.Sessions.Destroy(session.ID); err != nil {
+		http.Error(response, "La déconnexion n’a pas pu être enregistrée.", http.StatusServiceUnavailable)
+		return
+	}
+	http.SetCookie(response, websession.ExpiredCookie())
 	http.Redirect(response, request, "/login", http.StatusSeeOther)
 }
 
@@ -2919,7 +3172,7 @@ func (a *application) renderLogin(response http.ResponseWriter, csrf string, fai
 
 func (a *application) invalidate(response http.ResponseWriter, id string) {
 	if a.dependencies.Sessions != nil && id != "" {
-		a.dependencies.Sessions.Destroy(id)
+		_ = a.dependencies.Sessions.Destroy(id)
 	}
 	http.SetCookie(response, websession.ExpiredCookie())
 }

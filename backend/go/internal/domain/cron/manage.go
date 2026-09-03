@@ -377,7 +377,11 @@ func (b *Backend) startExecution(ctx context.Context, owner, taskID, command str
 		return nil, b.actionFailure("run")
 	}
 	unitName := "aegisadmin-cron-run-" + execution
-	_, status := b.runner.Run(ctx, b.paths.SystemdRun, "--quiet", "--collect", "--unit="+unitName, "--property=Type=exec", "--property=RuntimeMaxSec=70s", b.paths.Runner, execution, owner, command)
+	runtime := "70s"
+	if owner == "root" {
+		runtime = "2h10min"
+	}
+	_, status := b.runner.Run(ctx, b.paths.SystemdRun, "--quiet", "--collect", "--unit="+unitName, "--property=Type=exec", "--property=RuntimeMaxSec="+runtime, b.paths.Runner, execution, owner, command)
 	if status != 0 {
 		_ = os.Remove(resultPath)
 		return nil, b.actionFailure("run")

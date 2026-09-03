@@ -15,6 +15,7 @@ func TestUsageExplainsAdministrativeCommands(t *testing.T) {
 		"initialize-root",
 		"reset-root-password",
 		"disable-root-two-factor",
+		"configure-mysql",
 		"/database.sqlite",
 		"/migrations",
 	} {

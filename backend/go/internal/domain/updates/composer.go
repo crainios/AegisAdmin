@@ -26,6 +26,7 @@ const composerProfileFile = "/etc/aegisadmin-system/composer"
 var composerVHostPattern = regexp.MustCompile(`(?i)^(?:port\s+\d+\s+namevhost|default server)\s+(\S+)\s+\((/.+\.conf):(\d+)\)$`)
 var composerDomainPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$`)
 var composerDocumentRootPattern = regexp.MustCompile(`(?i)^DocumentRoot\s+["']?([^"']+)["']?$`)
+var composerEmptyAdvisoriesPattern = regexp.MustCompile(`(?s)"advisories"\s*:\s*\[\s*\]`)
 
 type composerProfile struct {
 	enabled       bool
@@ -61,6 +62,7 @@ type composerSite struct {
 	CompatibleCount    int                `json:"compatible_update_count"`
 	SecurityIssueCount int                `json:"security_issue_count"`
 	SecurityStatus     string             `json:"security_status"`
+	SecurityMessage    string             `json:"security_message"`
 	Packages           []composerPackage  `json:"packages"`
 	SecurityAdvisories []composerAdvisory `json:"security_advisories"`
 	Message            string             `json:"message"`
@@ -270,7 +272,7 @@ func inspectComposerProject(composer, project, rootUser string) composerSite {
 		}
 	}
 	result.UpdateCount = len(result.Packages)
-	result.SecurityAdvisories, result.SecurityStatus = composerAudit(composer, project, uid, gid, composerHome)
+	result.SecurityAdvisories, result.SecurityStatus, result.SecurityMessage = composerAudit(composer, project, uid, gid, composerHome)
 	result.SecurityIssueCount = len(result.SecurityAdvisories)
 	result.Status = "current"
 	result.Message = "Les dépendances sont à jour."
@@ -307,25 +309,29 @@ func parseComposerOutdated(output []byte) ([]composerPackage, error) {
 	return packages, nil
 }
 
-func composerAudit(composer, project string, uid, gid uint32, home string) ([]composerAdvisory, string) {
-	output, err, _ := runComposer(
+func composerAudit(composer, project string, uid, gid uint32, home string) ([]composerAdvisory, string, string) {
+	output, err, timedOut := runComposer(
 		composer,
 		project,
 		uid,
 		gid,
 		home,
-		[]string{"audit", "--locked", "--no-dev", "--format=json"},
+		[]string{"audit", "--locked", "--no-dev", "--abandoned=ignore", "--format=json"},
 		true,
 	)
 	var exitError *exec.ExitError
 	if err != nil && !errors.As(err, &exitError) {
-		return []composerAdvisory{}, "error"
+		return []composerAdvisory{}, "error", composerFailureMessage(output, err, timedOut, uid, gid)
 	}
 	result, parseErr := parseComposerAudit(output)
 	if parseErr != nil {
-		return []composerAdvisory{}, "error"
+		message := "La réponse JSON de l’audit Composer est invalide : " + parseErr.Error()
+		if err != nil {
+			message += " (code " + strconv.Itoa(exitError.ExitCode()) + ")"
+		}
+		return []composerAdvisory{}, "error", message
 	}
-	return result, "ok"
+	return result, "ok", ""
 }
 
 func parseComposerAudit(output []byte) ([]composerAdvisory, error) {
@@ -333,20 +339,30 @@ func parseComposerAudit(output []byte) ([]composerAdvisory, error) {
 		return []composerAdvisory{}, nil
 	}
 	var payload struct {
-		Advisories map[string][]struct {
-			AdvisoryID       string `json:"advisoryId"`
-			PackageName      string `json:"packageName"`
-			RemoteID         string `json:"remoteId"`
-			Title            string `json:"title"`
-			Link             string `json:"link"`
-			AffectedVersions string `json:"affectedVersions"`
-		} `json:"advisories"`
+		Advisories json.RawMessage `json:"advisories"`
 	}
 	if err := decodeComposerJSON(output, &payload); err != nil {
+		if composerEmptyAdvisoriesPattern.Match(output) {
+			return []composerAdvisory{}, nil
+		}
+		return nil, err
+	}
+	if len(payload.Advisories) == 0 || bytes.Equal(bytes.TrimSpace(payload.Advisories), []byte("[]")) || bytes.Equal(bytes.TrimSpace(payload.Advisories), []byte("null")) {
+		return []composerAdvisory{}, nil
+	}
+	var advisoriesByPackage map[string][]struct {
+		AdvisoryID       string `json:"advisoryId"`
+		PackageName      string `json:"packageName"`
+		RemoteID         string `json:"remoteId"`
+		Title            string `json:"title"`
+		Link             string `json:"link"`
+		AffectedVersions string `json:"affectedVersions"`
+	}
+	if err := json.Unmarshal(payload.Advisories, &advisoriesByPackage); err != nil {
 		return nil, err
 	}
 	result := []composerAdvisory{}
-	for packageName, advisories := range payload.Advisories {
+	for packageName, advisories := range advisoriesByPackage {
 		for _, advisory := range advisories {
 			name := advisory.PackageName
 			if name == "" {
@@ -385,14 +401,23 @@ func runComposer(composer, project string, uid, gid uint32, home string, argumen
 	command.Stderr = &stderr
 	output, err := command.Output()
 	diagnostic := append(append([]byte(nil), output...), stderr.Bytes()...)
-	if err != nil && retryWithoutLocked && composerRejectsLocked(diagnostic) {
-		withoutLocked := make([]string, 0, len(arguments)-1)
-		for _, argument := range arguments {
-			if argument != "--locked" {
-				withoutLocked = append(withoutLocked, argument)
-			}
+	if err != nil && retryWithoutLocked {
+		unsupported := ""
+		switch {
+		case composerRejectsLocked(diagnostic):
+			unsupported = "--locked"
+		case composerRejectsAbandonedMode(diagnostic):
+			unsupported = "--abandoned=ignore"
 		}
-		return runComposer(composer, project, uid, gid, home, withoutLocked, false)
+		if unsupported != "" {
+			compatible := make([]string, 0, len(arguments)-1)
+			for _, argument := range arguments {
+				if argument != unsupported {
+					compatible = append(compatible, argument)
+				}
+			}
+			return runComposer(composer, project, uid, gid, home, compatible, true)
+		}
 	}
 	if err != nil {
 		return diagnostic, err, ctx.Err() == context.DeadlineExceeded
@@ -430,6 +455,12 @@ func composerRejectsLocked(output []byte) bool {
 		strings.Contains(message, "option \"--locked\" does not exist") ||
 		strings.Contains(message, "option --locked does not exist") ||
 		strings.Contains(message, "l'option \"--locked\" n'existe pas")
+}
+
+func composerRejectsAbandonedMode(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "--abandoned") &&
+		(strings.Contains(message, "option does not exist") || strings.Contains(message, "option n'existe pas") || strings.Contains(message, "does not accept a value"))
 }
 
 func composerFailureMessage(output []byte, err error, timedOut bool, uid, gid uint32) string {
@@ -496,6 +527,11 @@ func composerEnvironment(home string) []string {
 		"COMPOSER_HOME=" + home,
 		"COMPOSER_CACHE_DIR=" + home + "/cache",
 		"COMPOSER_ALLOW_SUPERUSER=0",
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf",
+		"GIT_CONFIG_VALUE_0=git@github.com:",
+		"GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf",
+		"GIT_CONFIG_VALUE_1=ssh://git@github.com/",
 	}
 }
 
@@ -631,7 +667,7 @@ func profileValue(path, wanted, fallback string) string {
 func resolveComposer(configured string) string {
 	candidates := []string{configured}
 	if configured == "auto" || configured == "" {
-		candidates = []string{"/usr/bin/composer", "/usr/local/bin/composer"}
+		candidates = []string{"/usr/local/bin/composer", "/usr/bin/composer"}
 	}
 	for _, candidate := range candidates {
 		if (candidate == "/usr/bin/composer" || candidate == "/usr/local/bin/composer") && executable(candidate) {

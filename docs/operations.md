@@ -4,15 +4,28 @@ Ce guide regroupe les opérations courantes de la version 0.2.x installée avec
 le paquet Debian. Les commandes de développement depuis les sources sont
 décrites séparément dans `backend/go/DEPLOYMENT.md`.
 
+## Sauvegardes planifiées et transfert distant
+
+L’écran **Cron** propose des modèles pour MySQL/MariaDB, `/etc/apache2` et les sites placés sous `/var/www`. Les archives sont produites sous `/var/backups/aegisadmin`, contrôlées, puis transférées par `rsync` sur SSH. Une archive locale n’est supprimée qu’après un transfert réussi.
+
+La clé dédiée et l’identité du serveur distant sont conservées dans :
+
+```text
+/etc/aegisadmin-system/backup-ssh/id_ed25519
+/etc/aegisadmin-system/backup-ssh/known_hosts
+```
+
+Le compte distant doit être limité au répertoire de sauvegardes. AegisAdmin impose une connexion non interactive, la vérification stricte de l’hôte et le fichier `known_hosts` dédié. Les définitions root sont placées dans `/etc/cron.d/aegisadmin-backup-*` et leurs paramètres protégés dans `/etc/aegisadmin-system/backup-tasks` ; elles ne contiennent aucun secret.
+
 ## Repères
 
 | Élément | Emplacement ou service |
 |---|---|
 | Interface web Go | `aegisadmin-web.service` |
 | Backend privilégié | `aegisadmin-system.service` |
-| Proxy HTTPS | `apache2.service` |
-| Écoute Go locale | `https://127.0.0.1:9080` |
-| Accès HTTPS de secours | port `8443` via Apache |
+| Serveur HTTPS | `aegisadmin-web.service` sur `8443`, ou proxy Apache facultatif |
+| Écoute Go avec Apache | `https://127.0.0.1:9080` |
+| Accès HTTPS sans Apache | port `8443` directement via Go |
 | Base SQLite | `/var/lib/aegisadmin/database/aegisadmin.sqlite` |
 | Sauvegardes automatiques | `/var/lib/aegisadmin/database/backups` |
 | Snapshots | `/var/lib/aegisadmin/configuration/snapshots` |
@@ -32,6 +45,22 @@ L’identifiant du compte administrateur est toujours `root`. Le nom, le prénom
 et l’adresse e-mail demandés pendant l’initialisation décrivent ce compte mais
 ne remplacent pas son identifiant. Le mot de passe doit contenir entre 12 et 72
 caractères.
+
+Si MySQL ou MariaDB est actif, l’installation tente de créer automatiquement
+le compte technique `aegisadmin_monitor`. Lorsque le compte administrateur SQL
+exige un mot de passe, l’initialisation le demande avec une saisie masquée. La
+configuration peut également être terminée ou réparée séparément :
+
+```bash
+sudo aegisadmin mysql-setup
+```
+
+Le mot de passe administrateur n’est jamais conservé. Un secret aléatoire est
+généré pour le compte technique et placé dans
+`/etc/aegisadmin-system/mysql-client.cnf`, fichier root en mode `0600`.
+Les nombres de tables et tailles sont exposés au compte technique par la
+procédure restreinte `aegisadmin_monitoring.database_inventory_v2` ; aucun
+droit global de lecture des données applicatives ne lui est attribué.
 
 ## Contrôle de fonctionnement
 
@@ -64,6 +93,28 @@ exécuté en root.
 
 ## Mise à niveau
 
+Depuis l'interface, le module **Mises à jour** lance une unité systemd
+indépendante. Elle exécute `apt-get update`, puis `apt-get -y upgrade`. La
+progression est conservée sous `/var/lib/aegisadmin/updates` et réapparaît dans
+la modale après le redémarrage éventuel des services AegisAdmin.
+
+Diagnostic d'un travail, en remplaçant `IDENTIFIANT` par celui visible dans
+l'URL pendant l'opération :
+
+```bash
+sudo systemctl status aegisadmin-updater@IDENTIFIANT.service --no-pager -l
+sudo journalctl -u aegisadmin-updater@IDENTIFIANT.service --no-pager -l
+```
+
+Une seule mise à jour peut être exécutée à la fois.
+
+La session authentifiée est conservée dans un stockage privé pendant le
+redémarrage du serveur web. La modale peut ainsi reprendre son suivi sans
+imposer une nouvelle connexion. Une session expirée, révoquée par une
+modification de sécurité ou explicitement déconnectée n’est pas restaurée.
+
+### Mise à niveau manuelle
+
 Copier le paquet dans un répertoire accessible à `_apt`, puis l’installer :
 
 ```bash
@@ -95,6 +146,13 @@ sudo systemctl start aegisadmin-web.service
 Ne jamais copier uniquement la base pendant une écriture active sans utiliser
 la sauvegarde intégrée.
 
+Les mots de passe applicatifs, notamment SMTP, sont chiffrés dans SQLite avec
+la clé privée `/var/lib/aegisadmin/secrets/settings.key`. Pour restaurer ces
+secrets sur un autre serveur, sauvegarder cette clé séparément avec des droits
+stricts et la restaurer en mode `0600`, propriétaire `aegisadmin`. Sans cette
+clé, les données ordinaires restent restaurables mais les secrets chiffrés
+doivent être saisis à nouveau.
+
 ## Récupération du compte root
 
 ```bash
@@ -125,6 +183,8 @@ sudo apt remove aegisadmin
 
 La suppression arrête les services et désactive le site Apache, mais conserve
 la base, les sauvegardes, les snapshots, les configurations et la paire TLS.
+Les sessions web sont en revanche supprimées afin qu’une réinstallation ne
+restaure jamais une ancienne authentification.
 
 ```bash
 sudo apt purge aegisadmin

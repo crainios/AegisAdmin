@@ -2,10 +2,17 @@
 set -eu
 
 if [ "${1:-}" = remove ]; then
+    systemctl stop 'aegisadmin-updater@*.service' >/dev/null 2>&1 || true
     systemctl disable --now aegisadmin-system.service >/dev/null 2>&1 || true
     systemctl disable --now aegisadmin-web.service >/dev/null 2>&1 || true
-    a2dissite aegisadmin-admin.conf >/dev/null 2>&1 || true
-    systemctl reload apache2 >/dev/null 2>&1 || true
+    if command -v a2dissite >/dev/null 2>&1; then
+        a2dissite aegisadmin-admin.conf >/dev/null 2>&1 || true
+    fi
+    if systemctl cat apache2.service >/dev/null 2>&1; then
+        systemctl reload apache2 >/dev/null 2>&1 || true
+    fi
+    rm -f /var/lib/aegisadmin/sessions/sessions.json
+    rmdir /var/lib/aegisadmin/sessions >/dev/null 2>&1 || true
 fi
 
 exit 0

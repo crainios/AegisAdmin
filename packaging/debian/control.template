@@ -4,8 +4,9 @@ Section: admin
 Priority: optional
 Architecture: @ARCH@
 Maintainer: AegisAdmin <packages@aegisadmin.fr>
-Depends: adduser, apache2, ca-certificates, composer, openssl, python3, sudo, systemd
+Depends: adduser, apt, ca-certificates, composer, default-mysql-client, openssh-client, openssl, python3, rsync, sudo, systemd
 Recommends: certbot
+Suggests: apache2
 Description: administration web sécurisée pour serveurs Linux
  AegisAdmin fournit une interface web Go et un daemon Go privilégié séparé
  pour superviser et administrer un serveur Linux.

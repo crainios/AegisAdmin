@@ -4,6 +4,11 @@ AegisAdmin utilise exclusivement un daemon et un serveur web Go. Le frontend
 AegisAdmin utilise exclusivement ses composants Go pour l'interface web et le
 backend système.
 
+Les installations de paquets lancées depuis l'interface sont exécutées par
+`aegisadmin-updater@.service`. Cette unité indépendante conserve son état sous
+`/var/lib/aegisadmin/updates` et n'est pas arrêtée lorsque le paquet redémarre
+le backend ou le serveur web.
+
 ## Validation et installation
 
 ```bash

@@ -118,6 +118,40 @@ index et leurs sommes SHA-256.
 
 ## Publication atomique
 
+### Assistant de publication recommandé
+
+La première utilisation enregistre l’empreinte GPG et la destination SSH dans
+un fichier personnel protégé en mode `0600`. La phrase secrète GPG n’est jamais
+écrite dans ce fichier : GnuPG continue de la demander dans sa fenêtre
+sécurisée.
+
+```bash
+bash packaging/publish-release.sh configure
+```
+
+Contrôler les paramètres mémorisés sans afficher aucun secret :
+
+```bash
+bash packaging/publish-release.sh show-config
+```
+
+Les publications suivantes utilisent automatiquement la version du fichier
+`VERSION`, construisent et signent la livraison, la contrôlent, la transfèrent
+par SSH, l’activent atomiquement puis vérifient son accès HTTPS :
+
+```bash
+bash packaging/publish-release.sh publish
+```
+
+Le contrôle HTTPS final utilise `curl` lorsqu’il est disponible et se replie
+automatiquement sur `wget`. Une seule de ces deux commandes est nécessaire.
+
+Le répertoire local `dist/release-VERSION` doit être absent. Une publication
+distante portant déjà ce numéro est également refusée. Les étapes manuelles
+ci-dessous restent disponibles pour le diagnostic et les cas particuliers.
+
+### Procédure manuelle
+
 Transférer le dépôt généré et le dossier `packaging/` sur le serveur de
 publication, puis employer l’outil de publication. Il contrôle la source,
 effectue une copie appartenant à root, contrôle de nouveau cette copie et ne

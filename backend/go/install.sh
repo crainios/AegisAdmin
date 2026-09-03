@@ -18,7 +18,10 @@ readonly DAEMON_TARGET="/usr/libexec/aegisadmin/aegisadmin-daemon"
 readonly CLI_TARGET="/usr/bin/aegisadmin-system-go"
 readonly ADMIN_TARGET="/usr/libexec/aegisadmin/aegisadmin-admin"
 readonly WEB_TARGET="/usr/libexec/aegisadmin/aegisadmin-web"
+readonly UPDATER_TARGET="/usr/libexec/aegisadmin/aegisadmin-updater"
+readonly BACKUP_TARGET="/usr/libexec/aegisadmin/aegisadmin-backup"
 readonly UNIT_TARGET="/usr/lib/systemd/system/aegisadmin-system.service"
+readonly UPDATER_UNIT_TARGET="/usr/lib/systemd/system/aegisadmin-updater@.service"
 readonly SUDOERS_TARGET="/etc/sudoers.d/aegisadmin"
 readonly WEB_GROUP="aegisadmin-web"
 readonly SYSTEM_CONFIG_DIRECTORY="/etc/aegisadmin-system"
@@ -53,8 +56,11 @@ readonly APACHE_BACKUP_DIRECTORY="/var/backups/aegisadmin-system/apache"
 readonly CRON_BACKUP_DIRECTORY="/var/backups/aegisadmin-system/cron"
 readonly APPLICATION_DATABASE_DIRECTORY="/var/lib/aegisadmin/database"
 readonly APPLICATION_STATE_DIRECTORY="/var/lib/aegisadmin"
+readonly APPLICATION_UPDATE_DIRECTORY="${APPLICATION_STATE_DIRECTORY}/updates"
 readonly APPLICATION_DATABASE_FILE="${APPLICATION_DATABASE_DIRECTORY}/aegisadmin.sqlite"
 readonly APPLICATION_DATABASE_BACKUP_DIRECTORY="${APPLICATION_DATABASE_DIRECTORY}/backups"
+readonly APPLICATION_SESSION_DIRECTORY="${APPLICATION_STATE_DIRECTORY}/sessions"
+readonly APPLICATION_SECRET_DIRECTORY="${APPLICATION_STATE_DIRECTORY}/secrets"
 readonly MIGRATIONS_SOURCE="${APP_ROOT}/database/migrations"
 readonly MIGRATIONS_TARGET="/usr/share/aegisadmin/migrations"
 readonly LEGACY_BACKEND_TARGET="/usr/local/sbin/aegisadmin-system"
@@ -387,6 +393,9 @@ configure_application_storage()
 
 	"${INSTALL_COMMAND}" -d -o root -g "${WEB_GROUP}" -m 0750 \
 		"${APPLICATION_STATE_DIRECTORY}"
+	"${INSTALL_COMMAND}" -d -o aegisadmin -g aegisadmin -m 0700 \
+		"${APPLICATION_SESSION_DIRECTORY}" \
+		"${APPLICATION_SECRET_DIRECTORY}"
     "${INSTALL_COMMAND}" -d -o root -g "${WEB_GROUP}" -m 2770 \
         "${APPLICATION_DATABASE_DIRECTORY}"
     "${INSTALL_COMMAND}" -d -o root -g "${WEB_GROUP}" -m 2770 \
@@ -510,6 +519,16 @@ build_binaries()
             -ldflags "${linker_flags}" \
             -o "${output_directory}/aegisadmin-admin" \
             ./cmd/aegisadmin-admin
+        "${GO_COMMAND}" build \
+            -trimpath \
+            -ldflags "${linker_flags}" \
+            -o "${output_directory}/aegisadmin-updater" \
+            ./cmd/aegisadmin-updater
+        "${GO_COMMAND}" build \
+            -trimpath \
+            -ldflags "${linker_flags}" \
+            -o "${output_directory}/aegisadmin-backup" \
+            ./cmd/aegisadmin-backup
     )
 }
 
@@ -552,6 +571,12 @@ verify_installation()
         || fail "Le backend système installé est absent ou non exécutable : ${DAEMON_TARGET}" 10
     [[ -x "${WEB_TARGET}" ]] \
         || fail "Le serveur web installé est absent ou non exécutable : ${WEB_TARGET}" 10
+    [[ -x "${UPDATER_TARGET}" ]] \
+        || fail "L’exécuteur de mises à jour installé est absent : ${UPDATER_TARGET}" 10
+    [[ -x "${BACKUP_TARGET}" ]] \
+        || fail "L’exécuteur de sauvegarde installé est absent : ${BACKUP_TARGET}" 10
+    [[ -f "${UPDATER_UNIT_TARGET}" ]] \
+        || fail "L’unité indépendante de mise à jour est absente : ${UPDATER_UNIT_TARGET}" 10
     [[ -S "/run/aegisadmin-system/backend.sock" ]] \
         || fail "Le socket du backend système est absent." 10
 
@@ -649,6 +674,12 @@ install_backend()
         "$(dirname -- "${CRON_RUNNER_TARGET}")"
     "${INSTALL_COMMAND}" -d -o root -g "${WEB_GROUP}" -m 0750 \
         "${SYSTEM_CONFIG_DIRECTORY}" "${TLS_DIRECTORY}"
+    "${INSTALL_COMMAND}" -d -o root -g root -m 0700 \
+        "${SYSTEM_CONFIG_DIRECTORY}/backup-tasks" \
+        "${SYSTEM_CONFIG_DIRECTORY}/backup-ssh" \
+        "/var/backups/aegisadmin"
+    "${INSTALL_COMMAND}" -d -o root -g "${WEB_GROUP}" -m 0750 \
+        "${APPLICATION_UPDATE_DIRECTORY}" "${APPLICATION_UPDATE_DIRECTORY}/jobs"
 
     "${INSTALL_COMMAND}" -o root -g root -m 0750 \
         "${BUILD_DIRECTORY}/aegisadmin-daemon" \
@@ -662,6 +693,12 @@ install_backend()
     "${INSTALL_COMMAND}" -o root -g root -m 0755 \
         "${BUILD_DIRECTORY}/aegisadmin-web" \
         "${WEB_TARGET}"
+    "${INSTALL_COMMAND}" -o root -g root -m 0750 \
+        "${BUILD_DIRECTORY}/aegisadmin-updater" \
+        "${UPDATER_TARGET}"
+    "${INSTALL_COMMAND}" -o root -g root -m 0750 \
+        "${BUILD_DIRECTORY}/aegisadmin-backup" \
+        "${BACKUP_TARGET}"
 	if ! "${RUNUSER_COMMAND}" -u aegisadmin -g "${WEB_GROUP}" -- test -x "${WEB_TARGET}"; then
 		fail \
 			"Le compte aegisadmin ne peut pas exécuter ${WEB_TARGET}. Vérifiez les droits de ses répertoires parents." \
@@ -670,6 +707,9 @@ install_backend()
     "${INSTALL_COMMAND}" -o root -g root -m 0644 \
         "${SCRIPT_DIR}/deploy/aegisadmin-daemon.service" \
         "${UNIT_TARGET}"
+    "${INSTALL_COMMAND}" -o root -g root -m 0644 \
+        "${SCRIPT_DIR}/deploy/aegisadmin-updater@.service" \
+        "${UPDATER_UNIT_TARGET}"
     "${INSTALL_COMMAND}" -o root -g root -m 0440 \
         "${SCRIPT_DIR}/deploy/aegisadmin-system-go.sudoers" \
         "${SUDOERS_TARGET}"
@@ -687,6 +727,11 @@ install_backend()
 
 	"${ADMIN_TARGET}" --database "${APPLICATION_DATABASE_FILE}" \
 		--migrations "${MIGRATIONS_TARGET}" migrate
+	if "${SYSTEMCTL_COMMAND}" is-active --quiet mysql.service || \
+	   "${SYSTEMCTL_COMMAND}" is-active --quiet mariadb.service || \
+	   "${SYSTEMCTL_COMMAND}" is-active --quiet mysqld.service; then
+		"${ADMIN_TARGET}" configure-mysql-auto
+	fi
 	configure_application_storage
 
     if [[ ! -e "${CRON_USERS_TARGET}" ]]; then
@@ -790,12 +835,17 @@ remove_backend()
 
     "${SYSTEMCTL_COMMAND}" disable --now aegisadmin-system.service \
         >/dev/null 2>&1 || true
+    "${SYSTEMCTL_COMMAND}" stop 'aegisadmin-updater@*.service' \
+        >/dev/null 2>&1 || true
 
     "${RM_COMMAND}" -f -- \
         "${DAEMON_TARGET}" \
         "${CLI_TARGET}" \
 		"${ADMIN_TARGET}" \
+        "${UPDATER_TARGET}" \
+        "${BACKUP_TARGET}" \
         "${UNIT_TARGET}" \
+        "${UPDATER_UNIT_TARGET}" \
         "${SUDOERS_TARGET}" \
         "${DOCUMENTATION_TARGET}"
 

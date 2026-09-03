@@ -29,6 +29,7 @@ type LinuxBackend struct {
 	sitesEnabled   string
 	backupRoot     string
 	apacheRoot     string
+	installed      func(string) bool
 }
 
 var modulePattern = regexp.MustCompile(`(?i)^([a-zA-Z0-9_]+)_module\s+\((shared|static)\)$`)
@@ -48,7 +49,13 @@ func NewLinuxBackend() *LinuxBackend {
 		disableCommand: profile.disableCommand, sitesAvailable: profile.sitesAvailable,
 		sitesEnabled: profile.sitesEnabled, backupRoot: "/var/backups/aegisadmin-system/apache",
 		apacheRoot: profile.configRoot,
+		installed:  executableFile,
 	}
+}
+
+func executableFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode()&0111 != 0
 }
 
 func (b *LinuxBackend) Execute(ctx context.Context, command, argument string) (map[string]any, *Error) {

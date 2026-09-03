@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 type Backend interface {
@@ -40,6 +41,7 @@ type Snapshot struct {
 	Server    Server
 	Metrics   map[string]int64
 	Databases []Database
+	Warnings  []string
 }
 type Client struct{ backend Backend }
 
@@ -49,8 +51,21 @@ func (c *Client) MySQLSnapshot(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	var s Snapshot
+	serviceData, serviceErr := c.call("service")
+	if serviceErr == nil {
+		if e := decode(serviceData, &s.Server.Service); e != nil {
+			return s, fmt.Errorf("decode mysql service: %w", e)
+		}
+	}
 	info, e := c.call("info")
 	if e != nil {
+		if serviceErr == nil && s.Server.Service.Exists {
+			s.Server.Product = detectedProduct(s.Server.Service)
+			s.Warnings = append(s.Warnings, "Le service est détecté, mais la connexion locale à MySQL/MariaDB a été refusée. Vérifiez l’authentification du client système.")
+			s.Metrics = map[string]int64{}
+			s.Databases = []Database{}
+			return s, nil
+		}
 		return s, e
 	}
 	if e = decode(info, &s.Server); e != nil {
@@ -58,30 +73,41 @@ func (c *Client) MySQLSnapshot(ctx context.Context) (Snapshot, error) {
 	}
 	status, e := c.call("status")
 	if e != nil {
-		return s, e
+		s.Warnings = append(s.Warnings, "Les métriques MySQL ne sont pas disponibles.")
+		s.Metrics = map[string]int64{}
+	} else {
+		var metrics struct {
+			Metrics map[string]int64 `json:"metrics"`
+		}
+		if e = decode(status, &metrics); e != nil {
+			return s, e
+		}
+		s.Metrics = metrics.Metrics
 	}
-	var metrics struct {
-		Metrics map[string]int64 `json:"metrics"`
-	}
-	if e = decode(status, &metrics); e != nil {
-		return s, e
-	}
-	s.Metrics = metrics.Metrics
 	db, e := c.call("databases")
 	if e != nil {
-		return s, e
+		s.Warnings = append(s.Warnings, "La liste des bases MySQL ne peut pas être consultée.")
+		s.Databases = []Database{}
+	} else {
+		var databases struct {
+			Databases []Database `json:"databases"`
+		}
+		if e = decode(db, &databases); e != nil {
+			return s, e
+		}
+		s.Databases = databases.Databases
 	}
-	var databases struct {
-		Databases []Database `json:"databases"`
-	}
-	if e = decode(db, &databases); e != nil {
-		return s, e
-	}
-	s.Databases = databases.Databases
 	if s.Databases == nil {
 		s.Databases = []Database{}
 	}
 	return s, nil
+}
+
+func detectedProduct(service Service) string {
+	if service.Service != nil && strings.Contains(strings.ToLower(*service.Service), "maria") {
+		return "MariaDB"
+	}
+	return "MySQL / MariaDB"
 }
 func (c *Client) RestartMySQL(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {

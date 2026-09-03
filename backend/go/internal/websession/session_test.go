@@ -3,6 +3,8 @@ package websession
 import (
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -28,6 +30,66 @@ func TestSessionLifecycleAndRotation(t *testing.T) {
 	}
 	if current, found := manager.Get(authenticated.ID); !found || current.UserID != 42 || current.AuthVersion != 3 {
 		t.Fatalf("authenticated session missing: %#v", current)
+	}
+}
+
+func TestAuthenticatedSessionSurvivesRestartAndLogoutDoesNot(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "sessions.json")
+	manager, err := NewPersistent(DefaultConfig(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := manager.Create(StateTwoFactor, 7, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticated, err := manager.Rotate(pending.ID, StateAuthenticated, 7, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewPersistent(DefaultConfig(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session, found := restarted.Get(authenticated.ID); !found || session.UserID != 7 || session.State != StateAuthenticated {
+		t.Fatalf("restored session = %#v, found=%v", session, found)
+	}
+	if err := restarted.Destroy(authenticated.ID); err != nil {
+		t.Fatal(err)
+	}
+	afterLogout, err := NewPersistent(DefaultConfig(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := afterLogout.Get(authenticated.ID); found {
+		t.Fatal("logged-out session survived restart")
+	}
+}
+
+func TestPendingSessionIsNotRestored(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "sessions.json")
+	manager, err := NewPersistent(DefaultConfig(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := manager.Create(StateTwoFactor, 7, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewPersistent(DefaultConfig(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := restarted.Get(pending.ID); found {
+		t.Fatal("pending session survived restart")
 	}
 }
 

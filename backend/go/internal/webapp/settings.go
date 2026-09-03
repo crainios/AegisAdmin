@@ -31,6 +31,11 @@ func (a *application) settings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Les paramètres n’ont pas pu être chargés.", http.StatusServiceUnavailable)
 		return
 	}
+	smtp, err := a.dependencies.Settings.SMTPSettings(ctx)
+	if err != nil {
+		http.Error(w, "Les paramètres SMTP n’ont pas pu être chargés.", http.StatusServiceUnavailable)
+		return
+	}
 	logSources, logsErr := a.dependencies.Logs.LogSources(ctx)
 	admin, err := a.dependencies.AdminAccess.AdminAccess(ctx)
 	if err != nil {
@@ -45,8 +50,68 @@ func (a *application) settings(w http.ResponseWriter, r *http.Request) {
 	if admin.Message != "" {
 		message = `<p class="notice">` + html.EscapeString(admin.Message) + `</p>`
 	}
-	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{NOTICE}}", notice, "{{LOG_SOURCES}}", renderSettingLogSources(logSources, values.DefaultLog, logsErr), "{{CERTBOT_EMAIL}}", html.EscapeString(values.CertbotEmail), "{{ADMIN_MESSAGE}}", message, "{{ADMIN_ENABLED}}", checked(admin.Enabled), "{{ADMIN_ADDRESS}}", html.EscapeString(admin.Address), "{{ADMIN_PORT}}", strconv.Itoa(admin.Port), "{{ADMIN_ALLOW}}", html.EscapeString(admin.AllowFrom)).Replace(a.settingsPage)
+	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{NOTICE}}", notice, "{{LOG_SOURCES}}", renderSettingLogSources(logSources, values.DefaultLog, logsErr), "{{CERTBOT_EMAIL}}", html.EscapeString(values.CertbotEmail), "{{SMTP_HOST}}", html.EscapeString(smtp.Host), "{{SMTP_USERNAME}}", html.EscapeString(smtp.Username), "{{SMTP_PORT}}", strconv.Itoa(smtp.Port), "{{SMTP_SECURITY}}", renderSMTPSecurity(smtp.Security), "{{SMTP_PASSWORD_MASK}}", smtpPasswordMask(smtp.PasswordConfigured), "{{SMTP_PASSWORD_STATUS}}", smtpPasswordStatus(smtp.PasswordConfigured), "{{ADMIN_MESSAGE}}", message, "{{ADMIN_ENABLED}}", checked(admin.Enabled), "{{ADMIN_ADDRESS}}", html.EscapeString(admin.Address), "{{ADMIN_PORT}}", strconv.Itoa(admin.Port), "{{ADMIN_ALLOW}}", html.EscapeString(admin.AllowFrom)).Replace(a.settingsPage)
 	writeHTML(w, page, http.StatusOK)
+}
+
+func (a *application) updateSMTPSettings(w http.ResponseWriter, r *http.Request) {
+	session, _, ok := a.rootUser(w, r)
+	if !ok {
+		return
+	}
+	if !a.validForm(w, r, session.ID) {
+		return
+	}
+	host := strings.TrimSpace(r.PostForm.Get("smtp_host"))
+	username := strings.TrimSpace(r.PostForm.Get("smtp_username"))
+	password := r.PostForm.Get("smtp_password")
+	security := strings.ToLower(strings.TrimSpace(r.PostForm.Get("smtp_security")))
+	port, err := strconv.Atoi(r.PostForm.Get("smtp_port"))
+	if host == "" || len(host) > 253 || strings.ContainsAny(host, "\x00\r\n /\\") || len(username) > 254 || strings.ContainsAny(username, "\x00\r\n") || len(password) > 1024 || port < 1 || port > 65535 || !slices.Contains([]string{"none", "starttls", "tls"}, security) {
+		http.Error(w, "Configuration SMTP invalide.", http.StatusBadRequest)
+		return
+	}
+	var passwordUpdate *string
+	if r.PostForm.Get("clear_password") == "1" {
+		password = ""
+		passwordUpdate = &password
+	} else if password != "" {
+		passwordUpdate = &password
+	}
+	ctx, cancel := contextWithTimeout(r, 10*time.Second)
+	defer cancel()
+	if err = a.dependencies.Settings.UpdateSMTPSettings(ctx, authstore.SMTPSettings{Host: host, Username: username, Port: port, Security: security}, passwordUpdate); err != nil {
+		http.Error(w, "Enregistrement SMTP impossible.", http.StatusServiceUnavailable)
+		return
+	}
+	http.Redirect(w, r, "/setting?result=smtp", http.StatusSeeOther)
+}
+
+func renderSMTPSecurity(selected string) string {
+	labels := []struct{ value, label string }{{"none", "Aucun"}, {"starttls", "STARTTLS"}, {"tls", "TLS implicite (SMTPS, SSL)"}}
+	var result strings.Builder
+	for _, item := range labels {
+		result.WriteString(`<option value="` + item.value + `"`)
+		if item.value == selected {
+			result.WriteString(` selected`)
+		}
+		result.WriteString(`>` + item.label + `</option>`)
+	}
+	return result.String()
+}
+
+func smtpPasswordMask(configured bool) string {
+	if configured {
+		return "************"
+	}
+	return ""
+}
+
+func smtpPasswordStatus(configured bool) string {
+	if configured {
+		return `<span class="status-badge status-badge--success">Mot de passe enregistré</span>`
+	}
+	return `<span class="muted">Aucun mot de passe enregistré.</span>`
 }
 
 func (a *application) backupDatabase(w http.ResponseWriter, r *http.Request) {

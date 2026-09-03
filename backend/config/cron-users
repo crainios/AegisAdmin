@@ -1,3 +1,4 @@
 # Comptes techniques autorisés à gérer une crontab avec AegisAdmin.
 # Les comptes humains (UID >= UID_MIN avec shell de connexion) sont découverts automatiquement.
 # Un compte présent dans cron-users-deny reste toujours exclu.
+www-data

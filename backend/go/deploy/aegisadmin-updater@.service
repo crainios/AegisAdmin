@@ -1,0 +1,22 @@
+[Unit]
+Description=AegisAdmin independent package updater (%i)
+Documentation=file:/usr/local/share/doc/aegisadmin-system-go/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/libexec/aegisadmin/aegisadmin-updater --job %i --state-directory /var/lib/aegisadmin/updates
+TimeoutStartSec=2h10min
+UMask=0027
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native

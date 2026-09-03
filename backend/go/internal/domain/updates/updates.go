@@ -18,12 +18,15 @@ import (
 
 const (
 	aptCommand         = "/usr/bin/apt"
+	aptGetCommand      = "/usr/bin/apt-get"
 	dnfCommand         = "/usr/bin/dnf"
 	rpmCommand         = "/usr/bin/rpm"
 	fwupdCommand       = "/usr/bin/fwupdmgr"
 	aptListsDirectory  = "/var/lib/apt/lists"
 	dnfCacheDirectory  = "/var/cache/dnf"
 	rebootRequiredFile = "/var/run/reboot-required"
+	systemctlCommand   = "/usr/bin/systemctl"
+	updateStatePath    = "/var/lib/aegisadmin/updates"
 )
 
 type Runner interface {
@@ -34,9 +37,8 @@ type Backend struct {
 	runner                         Runner
 	apt, dnf, rpm, fwupd           string
 	aptLists, dnfCache, rebootFile string
-	jobsMu                         sync.Mutex
-	jobs                           map[string]*upgradeJob
-	activeJobID                    string
+	upgradeMu                      sync.Mutex
+	aptGet, systemctl, updateState string
 	composer                       *composerMonitor
 }
 
@@ -67,7 +69,7 @@ var aptLine = regexp.MustCompile(`^([^/]+)/([^ ]+)\s+(\S+)\s+(\S+)\s+\[upgradabl
 
 func New(backend *Backend) *Handler { return &Handler{backend} }
 func NewLinuxBackend(ctx context.Context) *Backend {
-	backend := &Backend{runner: execRunner{}, apt: aptCommand, dnf: dnfCommand, rpm: rpmCommand, fwupd: fwupdCommand, aptLists: aptListsDirectory, dnfCache: dnfCacheDirectory, rebootFile: rebootRequiredFile}
+	backend := &Backend{runner: execRunner{}, apt: aptCommand, aptGet: aptGetCommand, dnf: dnfCommand, rpm: rpmCommand, fwupd: fwupdCommand, aptLists: aptListsDirectory, dnfCache: dnfCacheDirectory, rebootFile: rebootRequiredFile, systemctl: systemctlCommand, updateState: updateStatePath}
 	backend.composer = newComposerMonitor(backend.runner)
 	backend.composer.start(ctx)
 	return backend

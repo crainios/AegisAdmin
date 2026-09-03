@@ -109,3 +109,47 @@ func TestMysqldServiceDiscovery(t *testing.T) {
 		t.Fatalf("unexpected mysqld service: %#v, %#v", service, err)
 	}
 }
+
+func TestStatusAcceptsMissingVersionSpecificVariables(t *testing.T) {
+	client := filepath.Join(t.TempDir(), "mariadb")
+	if err := os.WriteFile(client, []byte("fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	query := inSQL("SHOW GLOBAL STATUS WHERE Variable_name IN", statusVariables)
+	key := client + " --batch --raw --skip-column-names --protocol=socket --connect-timeout=5 --execute " + query
+	b := &Backend{runner: fakeRunner{responses: map[string]result{key: {stdout: "Threads_connected\t3\nQueries\t42", ok: true}}}, clients: []string{client}}
+	status, err := b.status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := status["metrics"].(map[string]any)
+	missing := status["missing_variables"].([]string)
+	if metrics["threads_connected"] != int64(3) || metrics["queries"] != int64(42) || len(missing) == 0 {
+		t.Fatalf("unexpected partial status: %#v", status)
+	}
+}
+
+func TestQueryUsesOnlyPrivateCredentialsFile(t *testing.T) {
+	directory := t.TempDir()
+	client := filepath.Join(directory, "mysql")
+	credentials := filepath.Join(directory, "mysql-client.cnf")
+	if err := os.WriteFile(client, []byte("fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentials, []byte("[client]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	query := "SELECT 1"
+	key := client + " --defaults-extra-file=" + credentials + " --batch --raw --skip-column-names --protocol=socket --connect-timeout=5 --execute " + query
+	b := &Backend{runner: fakeRunner{responses: map[string]result{key: {stdout: "1", ok: true}}}, clients: []string{client}, credentialsFile: credentials}
+	rows, err := b.query(context.Background(), query)
+	if err != nil || len(rows) != 1 || rows[0][0] != "1" {
+		t.Fatalf("query rows=%#v err=%#v", rows, err)
+	}
+	if chmodErr := os.Chmod(credentials, 0o640); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	if b.validCredentialsFile() {
+		t.Fatal("group-readable credentials unexpectedly accepted")
+	}
+}

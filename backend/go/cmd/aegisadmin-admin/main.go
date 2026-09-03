@@ -15,6 +15,7 @@ import (
 
 	"aegisadmin/backend/internal/authstore"
 	"aegisadmin/backend/internal/buildinfo"
+	"aegisadmin/backend/internal/mysqlsetup"
 )
 
 func main() {
@@ -53,10 +54,13 @@ func run() error {
 		printUsage(os.Stdout, *database, *migrations)
 		return nil
 	}
-	validCommands := map[string]bool{"migrate": true, "initialize-root": true, "reset-root-password": true, "disable-root-two-factor": true}
+	validCommands := map[string]bool{"migrate": true, "initialize-root": true, "reset-root-password": true, "disable-root-two-factor": true, "configure-mysql": true, "configure-mysql-auto": true}
 	if !validCommands[command] {
 		flags.Usage()
 		return fmt.Errorf("commande inconnue : %s", command)
+	}
+	if command == "configure-mysql" || command == "configure-mysql-auto" {
+		return configureMySQL(command == "configure-mysql-auto")
 	}
 	migrationContext, cancelMigration := context.WithTimeout(context.Background(), 30*time.Second)
 	applied, err := authstore.Migrate(migrationContext, *database, *migrations)
@@ -140,7 +144,8 @@ Commandes :
   migrate                    Appliquer les migrations SQLite en attente.
   initialize-root            Initialiser le compte root d’une nouvelle installation.
   reset-root-password        Définir un nouveau mot de passe root et fermer ses sessions.
-  disable-root-two-factor    Désactiver la 2FA root et fermer ses sessions.
+	  disable-root-two-factor    Désactiver la 2FA root et fermer ses sessions.
+	  configure-mysql            Créer et configurer le compte MySQL de supervision.
   help                       Afficher cette aide.
 
 Options :
@@ -154,8 +159,63 @@ Options :
 Exemples :
   sudo aegisadmin-admin reset-root-password
   sudo aegisadmin-admin disable-root-two-factor
-  sudo aegisadmin-admin migrate
+	  sudo aegisadmin-admin migrate
+	  sudo aegisadmin-admin configure-mysql
 `, database, migrations)
+}
+
+func configureMySQL(automatic bool) error {
+	configurator := mysqlsetup.New()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	created, err := configurator.Configure(ctx, nil)
+	cancel()
+	if err == nil {
+		if created {
+			fmt.Println("Le compte MySQL de supervision AegisAdmin a été créé.")
+		} else {
+			fmt.Println("Le compte MySQL de supervision AegisAdmin est déjà opérationnel.")
+		}
+		return nil
+	}
+	if automatic {
+		fmt.Println("La configuration automatique de MySQL nécessite une authentification administrateur.")
+		fmt.Println("Terminez-la avec : sudo aegisadmin mysql-setup")
+		return nil
+	}
+	reader := bufio.NewReader(os.Stdin)
+	login, readErr := readValueDefault(reader, "Compte administrateur MySQL [root] : ", "root")
+	if readErr != nil {
+		return readErr
+	}
+	password, readErr := readPassword(reader, "Mot de passe administrateur MySQL : ")
+	if readErr != nil {
+		return readErr
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+	created, err = configurator.Configure(ctx, &mysqlsetup.Administrator{Login: login, Password: password})
+	cancel()
+	if err != nil {
+		return err
+	}
+	if created {
+		fmt.Println("Le compte MySQL de supervision AegisAdmin a été créé.")
+	} else {
+		fmt.Println("Le compte MySQL de supervision AegisAdmin est déjà opérationnel.")
+	}
+	return nil
+}
+
+func readValueDefault(reader *bufio.Reader, prompt, fallback string) (string, error) {
+	fmt.Print(prompt)
+	value, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = fallback
+	}
+	return value, nil
 }
 
 func defaultMigrationsDirectory() string {

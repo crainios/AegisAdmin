@@ -34,6 +34,24 @@ func TestParseProcessesRejectsInvalidMetrics(t *testing.T) {
 	}
 }
 
+func TestProcessDescriptionSourcesAreParsedSafely(t *testing.T) {
+	root := t.TempDir()
+	cgroup := filepath.Join(root, "cgroup")
+	if err := os.WriteFile(cgroup, []byte("0::/system.slice/ssh.service\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if unit := readProcessUnit(cgroup); unit != "ssh.service" {
+		t.Fatalf("unit=%q", unit)
+	}
+	descriptions := parseSystemdDescriptions("Description=OpenSSH server daemon\nId=ssh.service\n\nId=cron.service\nDescription=Regular background program processing daemon\n")
+	if descriptions["ssh.service"] != "OpenSSH server daemon" || descriptions["cron.service"] == "" {
+		t.Fatalf("descriptions=%#v", descriptions)
+	}
+	if knownProcessDescription("aegisadmin-web") == "" || knownProcessDescription("private-worker") != "" {
+		t.Fatal("internal process fallback is not selective")
+	}
+}
+
 func TestReadMemory(t *testing.T) {
 	path := writeFixture(t, "meminfo", "MemTotal: 1000 kB\nMemAvailable: 400 kB\nBuffers: 50 kB\nCached: 200 kB\nSReclaimable: 25 kB\nShmem: 10 kB\n")
 

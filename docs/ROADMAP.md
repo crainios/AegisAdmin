@@ -2,7 +2,7 @@
 
 ## État actuel
 
-La version 0.2.22 est une version candidate publique :
+La version 0.2.39 est la version candidate courante :
 
 - interface web et backend système en Go ;
 - seize domaines d'administration et de supervision ;
@@ -10,16 +10,21 @@ La version 0.2.22 est une version candidate publique :
 - dépôt APT officiel signé ;
 - documentation d'installation et d'exploitation ;
 - audit des trois thèmes, contrôle responsive et harmonisation des permissions ;
+- bibliothèque de sauvegardes Cron avec transfert `rsync`/SSH hors serveur ;
 - suivi des mises à jour dans une modale de type terminal.
+- mise à jour autonome du paquet par un service systemd indépendant avec suivi
+  persistant.
+- configuration SMTP avec stockage chiffré du mot de passe, en préparation des
+  notifications par courriel.
 
 ## Série 0.2.x — Stabilisation
 
-1. isoler l'installation des mises à jour dans un service systemd dédié afin
-   qu'AegisAdmin puisse mettre à jour son propre paquet sans interrompre APT ;
+1. valider la mise à jour autonome du paquet sur le serveur de test ;
 2. poursuivre les validations fonctionnelles sur le serveur de test ;
 3. corriger les anomalies découvertes à l'usage ;
 4. automatiser les tests Go et les contrôles de paquet sur GitHub ;
 5. valider, signer et documenter chaque nouvelle livraison candidate.
+6. ajouter le test SMTP puis les notifications configurables.
 
 ## Première version stable
 
@@ -38,4 +43,3 @@ systemd, APT, Apache et l'architecture `amd64`.
 - amélioration de la gestion coordonnée de plusieurs serveurs ;
 - définition du rythme de renouvellement des sous-clés de signature APT ;
 - enrichissement progressif des domaines de supervision et d'administration.
-

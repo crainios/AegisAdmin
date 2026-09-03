@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 )
@@ -156,11 +157,21 @@ func TestHandlerErrors(t *testing.T) {
 func TestUpgradeLifecycle(t *testing.T) {
 	directory := t.TempDir()
 	apt := filepath.Join(directory, "apt")
-	script := "#!/bin/sh\nprintf 'Reading package lists...\\nInstalling package-a...\\n'\n"
-	if err := os.WriteFile(apt, []byte(script), 0o755); err != nil {
+	aptGet := filepath.Join(directory, "apt-get")
+	systemctl := filepath.Join(directory, "systemctl")
+	for _, command := range []string{apt, systemctl} {
+		if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(aptGet, []byte("#!/bin/sh\nprintf 'Running %s\\n' \"$*\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	backend := &Backend{apt: apt}
+	state := filepath.Join(directory, "updates")
+	if err := os.MkdirAll(filepath.Join(state, "jobs"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	backend := &Backend{runner: fakeRunner{}, apt: apt, aptGet: aptGet, systemctl: systemctl, updateState: state}
 	handler := New(backend)
 	started := handler.Handle(context.Background(), "upgrade-start", nil)
 	if !started.Response.Success {
@@ -170,25 +181,23 @@ func TestUpgradeLifecycle(t *testing.T) {
 	if !ok || len(jobID) != 32 {
 		t.Fatalf("job id = %#v", (*started.Response.Data)["job_id"])
 	}
+	repeated := handler.Handle(context.Background(), "upgrade-start", nil)
+	if !repeated.Response.Success || (*repeated.Response.Data)["job_id"] != jobID || (*repeated.Response.Data)["already_running"] != true {
+		t.Fatalf("repeated start = %#v", repeated)
+	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		status := handler.Handle(context.Background(), "upgrade-status", []string{jobID})
-		if !status.Response.Success {
-			t.Fatalf("status = %#v", status)
-		}
-		data := *status.Response.Data
-		if data["status"] == "completed" {
-			lines := data["lines"].([]string)
-			if len(lines) < 3 || data["exit_code"] == nil {
-				t.Fatalf("completed data = %#v", data)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("upgrade did not complete: %#v", data)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := runUpdater(context.Background(), jobID, upgradeStore{root: state}, updaterCommands{aptGet: aptGet}); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh backend instance must recover the persisted result after a restart.
+	status := New(&Backend{updateState: state}).Handle(context.Background(), "upgrade-status", []string{jobID})
+	if !status.Response.Success {
+		t.Fatalf("status = %#v", status)
+	}
+	data := *status.Response.Data
+	lines := data["lines"].([]string)
+	if data["status"] != "completed" || len(lines) < 6 || data["exit_code"] == nil {
+		t.Fatalf("completed data = %#v", data)
 	}
 }
 
@@ -196,6 +205,33 @@ func TestUpgradeStatusRejectsInvalidJobID(t *testing.T) {
 	reply := New(&Backend{}).Handle(context.Background(), "upgrade-status", []string{"invalid"})
 	if reply.Response.Error == nil || reply.Response.Error.Code != "INVALID_JOB_ID" {
 		t.Fatalf("reply = %#v", reply)
+	}
+}
+
+func TestUpdaterStopsWhenMetadataRefreshFails(t *testing.T) {
+	directory := t.TempDir()
+	state := filepath.Join(directory, "updates")
+	if err := os.MkdirAll(filepath.Join(state, "jobs"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	id := "0123456789abcdef0123456789abcdef"
+	store := upgradeStore{root: state}
+	if err := store.create(upgradeJob{ID: id, Status: "pending", Backend: "apt", Lines: []string{}, StartedAt: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+	aptGet := filepath.Join(directory, "apt-get")
+	if err := os.WriteFile(aptGet, []byte("#!/bin/sh\necho refresh-failed\nexit 42\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runUpdater(context.Background(), id, store, updaterCommands{aptGet: aptGet}); err == nil {
+		t.Fatal("failed metadata refresh accepted")
+	}
+	job, err := store.read(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != "failed" || job.ExitCode == nil || *job.ExitCode != 42 || job.FinishedAt == nil {
+		t.Fatalf("failed job = %#v", job)
 	}
 }
 
@@ -254,11 +290,22 @@ func TestParseComposerAudit(t *testing.T) {
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("empty advisories = %#v, err = %v", empty, err)
 	}
+	empty, err = parseComposerAudit([]byte(`{"advisories":[],"abandoned":[]}`))
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty Composer audit = %#v, err = %v", empty, err)
+	}
+	empty, err = parseComposerAudit([]byte(`{"advisories":[],$prefix}`))
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("noisy empty Composer audit = %#v, err = %v", empty, err)
+	}
 }
 
 func TestComposerCompatibilityAndFailureMessages(t *testing.T) {
 	if !composerRejectsLocked([]byte(`The "--locked" option does not exist.`)) {
 		t.Fatal("the legacy Composer option error must be recognized")
+	}
+	if !composerRejectsAbandonedMode([]byte(`The "--abandoned" option does not exist.`)) {
+		t.Fatal("the legacy Composer abandoned option error must be recognized")
 	}
 	message := composerFailureMessage([]byte("Permission denied"), &exec.ExitError{}, false, uint32(os.Getuid()), uint32(os.Getgid()))
 	if message != "Composer ne peut pas lire le projet avec l’identité non-root configurée." {
@@ -290,5 +337,20 @@ func TestComposerInvocationDisablesPCREJIT(t *testing.T) {
 	wanted := []string{"-d", "pcre.jit=0", "/usr/local/bin/composer", "--no-interaction", "outdated"}
 	if !reflect.DeepEqual(arguments, wanted) {
 		t.Fatalf("arguments = %#v", arguments)
+	}
+}
+
+func TestComposerEnvironmentRewritesPublicGitHubSSHURLs(t *testing.T) {
+	environment := composerEnvironment("/tmp/composer-test")
+	for _, wanted := range []string{
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf",
+		"GIT_CONFIG_VALUE_0=git@github.com:",
+		"GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf",
+		"GIT_CONFIG_VALUE_1=ssh://git@github.com/",
+	} {
+		if !slices.Contains(environment, wanted) {
+			t.Fatalf("missing environment entry %q in %#v", wanted, environment)
+		}
 	}
 }

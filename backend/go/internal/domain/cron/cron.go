@@ -30,6 +30,7 @@ type Paths struct {
 	BackupDirectory, ResultDirectory, LockFile                      string
 	TempDirectory, PasswdFile, LoginDefsFile, AllowedUsersFile      string
 	DeniedUsersFile                                                 string
+	BackupTaskDirectory, BackupCronDirectory, BackupExecutable      string
 }
 
 type Backend struct {
@@ -45,6 +46,8 @@ type execRunner struct{}
 var argumentCounts = map[string]int{
 	"info": 0, "status": 0, "users": 0, "jobs": 0, "create": 3, "update": 4,
 	"suspend": 2, "resume": 2, "delete": 2, "run": 2, "run-result": 1,
+	"backup-create": 12,
+	"backup-delete": 1, "backup-run": 1,
 }
 
 var runnerPath = "/usr/local/lib/aegisadmin-system/libexec/cron-runner.py"
@@ -65,8 +68,10 @@ func NewLinuxBackend() *Backend {
 		LockFile:        "/run/lock/aegisadmin-cron.lock",
 		TempDirectory:   "/run",
 		PasswdFile:      "/etc/passwd", LoginDefsFile: "/etc/login.defs",
-		AllowedUsersFile: "/etc/aegisadmin-system/cron-users",
-		DeniedUsersFile:  "/etc/aegisadmin-system/cron-users-deny",
+		AllowedUsersFile:    "/etc/aegisadmin-system/cron-users",
+		DeniedUsersFile:     "/etc/aegisadmin-system/cron-users-deny",
+		BackupTaskDirectory: "/etc/aegisadmin-system/backup-tasks",
+		BackupCronDirectory: "/etc/cron.d", BackupExecutable: "/usr/libexec/aegisadmin/aegisadmin-backup",
 	}}
 	if !executable(b.paths.DpkgQuery) && executable(b.paths.RPM) {
 		b.packageName, b.service, b.unit = "cronie", "crond", "crond.service"
@@ -174,6 +179,12 @@ func (b *Backend) execute(ctx context.Context, command string, args []string) (m
 		return map[string]any{"users": users, "count": len(users)}, nil
 	case "run-result":
 		return b.runResult(args[0])
+	case "backup-create":
+		return b.createBackupTask(args)
+	case "backup-delete":
+		return b.deleteBackupTask(args[0])
+	case "backup-run":
+		return b.runBackupTask(ctx, args[0])
 	default:
 		return b.manage(ctx, command, args)
 	}

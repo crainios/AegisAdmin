@@ -21,7 +21,7 @@
     themeStylesheet.href = `/assets/themes.css?v=${document.querySelector('link[href*="?v="]')?.href.split("?v=")[1] || ""}`;
     document.head.appendChild(themeStylesheet);
     const storedTheme = document.cookie.match(/(?:^|; )aegisadmin_theme=([^;]+)/)?.[1];
-    const activeTheme = ["dark", "light", "bootstrap"].includes(storedTheme) ? storedTheme : "dark";
+    const activeTheme = ["dark", "light", "bootstrap", "neon"].includes(storedTheme) ? storedTheme : "dark";
     document.documentElement.dataset.theme = activeTheme;
     const shell = document.createElement("div");
     shell.className = "app-shell";
@@ -37,7 +37,7 @@
         </a>
         <button class="app-header__menu-button" type="button" aria-label="Ouvrir le menu" aria-expanded="false"><span>☰</span><span>Menu</span></button>
         <div class="app-header__actions">
-            <label class="app-theme-selector"><span class="app-theme-selector__label">Thème</span><select class="app-theme-selector__select" aria-label="Thème"><option value="dark">Sombre</option><option value="light">Clair</option><option value="bootstrap">Bootstrap</option></select></label>
+            <label class="app-theme-selector"><span class="app-theme-selector__label">Thème</span><select class="app-theme-selector__select" aria-label="Thème"><option value="dark">Sombre</option><option value="light">Clair</option><option value="bootstrap">Bootstrap</option><option value="neon">Néon Pop</option></select></label>
             <span class="app-header__time"></span><button class="app-header__button" type="button">Actualiser</button>
         </div>`;
 
@@ -52,9 +52,10 @@
     sidebarClose.textContent = "× Fermer le menu";
     const nav = document.createElement("nav");
     nav.className = "app-navigation";
-    routes.forEach(([category, links]) => {
+    routes.forEach(([category, links], categoryIndex) => {
         const group = document.createElement("div");
         group.className = "app-navigation__group";
+        group.dataset.accent = String(categoryIndex % 6);
         const title = document.createElement("button");
         title.type = "button";
         title.className = "app-navigation__section";
@@ -112,9 +113,10 @@
         .then((response) => response.ok ? response.json() : Promise.reject())
         .then((categories) => {
             nav.querySelectorAll(".app-navigation__group").forEach((group) => group.remove());
-            categories.forEach((category) => {
+            categories.forEach((category, categoryIndex) => {
                 const group = document.createElement("div");
                 group.className = "app-navigation__group";
+                group.dataset.accent = String(categoryIndex % 6);
                 const title = document.createElement("button");
                 title.type = "button";
                 title.className = "app-navigation__section";
@@ -244,6 +246,13 @@
         window.setInterval(refreshResources, interval);
     }
 
+    const dashboardUptime = document.querySelector("[data-dashboard-uptime]");
+    if (dashboardUptime) {
+        let seconds=Number(dashboardUptime.dataset.dashboardUptimeSeconds)||0;
+        const formatUptime=()=>{const days=Math.floor(seconds/86400),hours=Math.floor((seconds%86400)/3600),minutes=Math.floor((seconds%3600)/60);const parts=[];if(days)parts.push(`${days} j`);if(hours)parts.push(`${hours} h`);parts.push(`${minutes} min`);dashboardUptime.textContent=parts.join(" ");};
+        window.setInterval(()=>{seconds+=60;formatUptime();},60000);
+    }
+
     const dashboardSupervision = document.querySelector("[data-dashboard-supervision]");
     if (dashboardSupervision) {
         const interval = Math.max(5000, Number(dashboardSupervision.dataset.dashboardSupervisionInterval) || 15000);
@@ -328,18 +337,49 @@
         if (defaultButton) sortTable(defaultButton, table.dataset.sortDefaultDirection || "ascending");
     });
 
-    const cronDialog = document.querySelector("[data-cron-edit-dialog]");
+    const cronDialog = document.querySelector("[data-cron-create-dialog]");
+    const cronForm = cronDialog?.querySelector("[data-cron-create-form]");
+    const cronParts = ["minute","hour","monthday","month","weekday"];
+    const selectedCronValues = (part) => Array.from(cronForm?.querySelectorAll(`[data-cron-part="${part}"]:checked`) || []).map((field)=>Number(field.value)).sort((a,b)=>a-b);
+    const cronPartExpression = (part, total) => { const values=selectedCronValues(part); return values.length===0||values.length===total?"*":values.join(","); };
+    const updateCronSchedule = () => {
+        if (!cronForm) return;
+        const custom=cronForm.querySelector("[data-cron-mode]").value==="custom";
+        cronForm.querySelector("[data-cron-visual]").hidden=custom;
+        cronForm.querySelector("[data-cron-custom-field]").hidden=!custom;
+        const expression=custom?cronForm.querySelector("[data-cron-custom]").value.trim():[cronPartExpression("minute",60),cronPartExpression("hour",24),cronPartExpression("monthday",31),cronPartExpression("month",12),cronPartExpression("weekday",7)].join(" ");
+        cronForm.querySelector("[data-cron-schedule]").value=expression;
+        cronForm.querySelector("[data-cron-schedule-preview]").textContent=expression||"Expression incomplète";
+        cronForm.querySelector("[data-cron-day-warning]").hidden=custom||selectedCronValues("monthday").length===0||selectedCronValues("weekday").length===0;
+    };
+    const setCronExpression = (expression) => {
+        if (!cronForm) return;
+        cronForm.querySelectorAll("[data-cron-part]").forEach((field)=>{field.checked=false;});
+        const fields=expression.trim().split(/\s+/), limits=[60,24,31,12,7]; let visual=fields.length===5;
+        fields.forEach((field,index)=>{if(!visual)return;if(field==="*")return;if(!/^\d+(?:,\d+)*$/.test(field)){visual=false;return;}const values=field.split(",").map(Number);if(values.some((value)=>value<(index===2||index===3?1:0)||value>(index===0?59:index===1?23:index===2?31:index===3?12:6))){visual=false;return;}values.forEach((value)=>{const choice=cronForm.querySelector(`[data-cron-part="${cronParts[index]}"][value="${value}"]`);if(choice)choice.checked=true;});});
+        cronForm.querySelector("[data-cron-mode]").value=visual?"visual":"custom";
+        cronForm.querySelector("[data-cron-custom]").value=expression;
+        updateCronSchedule();
+    };
+    const openCronForm = (mode, data={}) => {
+        if (!cronDialog||!cronForm) return;
+        const editing=mode==="edit"; cronForm.action=editing?"/cron/update":"/cron/create";
+        cronForm.querySelector("[data-cron-form-title]").textContent=editing?"Modifier la tâche Cron":"Créer une tâche utilisateur";
+        cronForm.querySelector("[data-cron-submit]").textContent=editing?"Enregistrer":"Créer la tâche";
+        cronForm.querySelector("[data-cron-task-id]").value=data.taskId||"";
+        cronForm.querySelector("[data-cron-user]").value=data.user||cronForm.querySelector("[data-cron-user]").options[0]?.value||"";
+        cronForm.querySelector("[data-cron-user]").disabled=editing;
+        let hiddenUser=cronForm.querySelector('[data-cron-edit-user-hidden]');if(hiddenUser)hiddenUser.remove();if(editing){hiddenUser=document.createElement("input");hiddenUser.type="hidden";hiddenUser.name="user";hiddenUser.value=data.user;hiddenUser.dataset.cronEditUserHidden="";cronForm.appendChild(hiddenUser);}
+        cronForm.querySelector("[data-cron-command]").value=data.command||"";
+        setCronExpression(data.schedule||"0 2 * * *"); cronDialog.showModal();
+    };
     document.querySelectorAll("[data-cron-action]").forEach((select) => {
         select.addEventListener("change", () => {
             const action = select.value;
             select.value = "";
             if (!action) return;
             if (action === "edit" && cronDialog) {
-                cronDialog.querySelector("[data-cron-edit-user]").value = select.dataset.user;
-                cronDialog.querySelector("[data-cron-edit-task-id]").value = select.dataset.taskId;
-                cronDialog.querySelector("[data-cron-edit-schedule]").value = select.dataset.schedule;
-                cronDialog.querySelector("[data-cron-edit-command]").value = select.dataset.command;
-                cronDialog.showModal();
+                openCronForm("edit",select.dataset);
                 return;
             }
             if (action === "delete" && !window.confirm("Supprimer cette tâche Cron ?")) return;
@@ -353,7 +393,31 @@
             form.submit();
         });
     });
-    cronDialog?.querySelector("[data-cron-edit-close]")?.addEventListener("click", () => cronDialog.close());
+    cronForm?.querySelectorAll("select,input").forEach((field)=>field.addEventListener("input",updateCronSchedule));
+    cronForm?.querySelectorAll("[data-cron-clear]").forEach((button)=>button.addEventListener("click",()=>{cronForm.querySelectorAll(`[data-cron-part="${button.dataset.cronClear}"]`).forEach((field)=>{field.checked=false;});updateCronSchedule();}));
+    document.querySelector("[data-cron-create-open]")?.addEventListener("click",()=>openCronForm("create"));
+    cronDialog?.querySelector("[data-cron-create-close]")?.addEventListener("click",()=>cronDialog.close());
+    cronForm?.addEventListener("submit",(event)=>{updateCronSchedule();if(!cronForm.querySelector("[data-cron-schedule]").value){event.preventDefault();}});
+
+    const backupDialog = document.querySelector("[data-backup-dialog]");
+    const backupDefaults = {mysql:["Sauvegarde MySQL / MariaDB","all","Sauvegarde des bases de données"],apache:["Sauvegarde de la configuration Apache","/etc/apache2","Configuration Apache"],sites:["Sauvegarde des sites web","/var/www","Sites web"]};
+    document.querySelectorAll("[data-backup-template-select]").forEach((select) => select.addEventListener("change", () => {
+        if (!backupDialog) return;
+        const kind=select.value, values=backupDefaults[kind]; if (!values) return;
+        select.value="";
+        backupDialog.querySelector("[data-backup-kind]").value=kind;
+        backupDialog.querySelector("[data-backup-title]").textContent=values[0];
+        backupDialog.querySelector("[data-backup-source]").value=values[1];
+        backupDialog.querySelector('input[name="name"]').value=values[2];
+        backupDialog.showModal();
+    }));
+    backupDialog?.querySelector("[data-backup-close]")?.addEventListener("click", () => backupDialog.close());
+    document.querySelectorAll("[data-backup-action]").forEach((select) => select.addEventListener("change", () => {
+        const action=select.value; select.value=""; if (!action) return;
+        if (action==="delete" && !window.confirm("Supprimer cette tâche de sauvegarde ?")) return;
+        const form=document.createElement("form"); form.method="post"; form.action=`/cron/backup/${action}`;
+        [["_token",select.dataset.csrf],["task_id",select.dataset.taskId]].forEach(([name,value])=>{const input=document.createElement("input");input.type="hidden";input.name=name;input.value=value;form.appendChild(input);}); document.body.appendChild(form); form.submit();
+    }));
 
     const cronRunDialog = document.querySelector("[data-cron-run-dialog]");
     const cronExecution = new URLSearchParams(window.location.search).get("execution");
@@ -508,7 +572,8 @@
     }
 
     const updateJobModal = document.querySelector("[data-update-job-modal]");
-    const updateJobID = new URLSearchParams(window.location.search).get("job");
+    const updateJobParameters = new URLSearchParams(window.location.search);
+    const updateJobID = updateJobParameters.get("job");
     if (updateJobModal && /^[a-f0-9]{32}$/.test(updateJobID || "")) {
         const status = updateJobModal.querySelector("[data-update-job-status]");
         const state = updateJobModal.querySelector("[data-update-job-state]");
@@ -530,6 +595,10 @@
         const close = () => {
             if (!complete) return;
             window.clearTimeout(pollingTimer);
+            if (updateJobModal.dataset.updateJobResult === "success") {
+                window.location.replace(`/updates?refreshed=${Date.now()}`);
+                return;
+            }
             updateJobModal.hidden = true;
             document.body.classList.remove("modal-open");
             const location = new URL(window.location.href);
@@ -545,6 +614,11 @@
             updateJobModal.dataset.updateJobResult = succeeded ? "success" : "failed";
             notice.hidden = succeeded;
             if (!succeeded) notice.textContent = "Consultez les dernières lignes du terminal pour identifier la cause de l’échec.";
+            if (succeeded) {
+                document.querySelectorAll("[data-updates-summary] div").forEach((item)=>{const label=item.querySelector("dt")?.textContent.trim();if(label==="Paquets"||label==="Sécurité")item.querySelector("dd").textContent="0";});
+                const packageBody=document.querySelector(".updates-stack .table-panel .data-table tbody");
+                if(packageBody)packageBody.innerHTML='<tr><td colspan="5" class="muted">Aucun paquet disponible.</td></tr>';
+            }
         };
         const poll = async () => {
             try {
@@ -558,9 +632,10 @@
                 started.textContent = formatDate(job.started_at);
                 finished.textContent = formatDate(job.finished_at);
                 exitCode.textContent = job.exit_code === null || job.exit_code === undefined ? "—" : String(job.exit_code);
-                if (job.status === "running") {
-                    status.textContent = "Installation en cours… Cette fenêtre se fermera uniquement à la fin.";
-                    state.textContent = "En cours";
+                if (job.status === "pending" || job.status === "running") {
+                    const pending = job.status === "pending";
+                    status.textContent = pending ? "Démarrage du service indépendant…" : "Installation en cours… Cette fenêtre se fermera uniquement à la fin.";
+                    state.textContent = pending ? "Préparation" : "En cours";
                     updateJobModal.dataset.updateJobResult = "running";
                     notice.hidden = true;
                     pollingTimer = window.setTimeout(poll, 1000);

@@ -47,10 +47,13 @@ required_files=(
     usr/libexec/aegisadmin/aegisadmin-admin
     usr/libexec/aegisadmin/aegisadmin-daemon
     usr/libexec/aegisadmin/aegisadmin-web
+    usr/libexec/aegisadmin/aegisadmin-updater
+    usr/libexec/aegisadmin/aegisadmin-backup
     usr/libexec/aegisadmin/certbot-runner.py
     usr/libexec/aegisadmin/cron-runner.py
     lib/systemd/system/aegisadmin-system.service
     lib/systemd/system/aegisadmin-web.service
+    lib/systemd/system/aegisadmin-updater@.service
     etc/sudoers.d/aegisadmin
     usr/share/aegisadmin/VERSION
     usr/share/aegisadmin/defaults/admin-web
@@ -68,6 +71,38 @@ done
 
 [[ "$(stat -c '%a' "${ROOT}/usr/libexec/aegisadmin/aegisadmin-web")" == 755 ]] \
     || fail "Le serveur web du paquet n’est pas exécutable par son compte système."
+[[ "$(stat -c '%a' "${ROOT}/usr/libexec/aegisadmin/aegisadmin-updater")" == 750 ]] \
+    || fail "Les droits de l’exécuteur de mises à jour ne sont pas 0750."
+[[ "$(stat -c '%a' "${ROOT}/usr/libexec/aegisadmin/aegisadmin-backup")" == 750 ]] \
+    || fail "Les droits de l’exécuteur de sauvegarde ne sont pas 0750."
+grep -q 'mysql-setup' "${ROOT}/usr/bin/aegisadmin" \
+    || fail "La commande de configuration MySQL est absente du lanceur principal."
+grep -q 'configure-mysql-auto' "${CONTROL}/postinst" \
+    || fail "L’installation ne tente pas de préparer le compte MySQL de supervision."
+grep -q '^ExecStart=/usr/libexec/aegisadmin/aegisadmin-updater --job %i ' \
+    "${ROOT}/lib/systemd/system/aegisadmin-updater@.service" \
+    || fail "L’unité systemd ne lance pas l’exécuteur de mises à jour attendu."
+grep -q -- '--sessions /var/lib/aegisadmin/sessions/sessions.json' \
+    "${ROOT}/lib/systemd/system/aegisadmin-web.service" \
+    || fail "L’unité web ne configure pas le stockage persistant des sessions."
+grep -q -- '--secret-key /var/lib/aegisadmin/secrets/settings.key' \
+    "${ROOT}/lib/systemd/system/aegisadmin-web.service" \
+    || fail "L’unité web ne configure pas la clé des secrets applicatifs."
+grep -q -- '--allow-from ${AEGISADMIN_WEB_ALLOW_FROM}' \
+    "${ROOT}/lib/systemd/system/aegisadmin-web.service" \
+    || fail "L’unité web ne transmet pas la restriction réseau au serveur Go."
+grep -q '^StartLimitIntervalSec=60s$' "${ROOT}/lib/systemd/system/aegisadmin-web.service" && \
+grep -q '^StartLimitBurst=5$' "${ROOT}/lib/systemd/system/aegisadmin-web.service" \
+    || fail "L’unité web ne limite pas les boucles de redémarrage."
+grep -q 'normalize_database_permissions' "${ROOT}/usr/bin/aegisadmin" && \
+grep -q 'systemctl stop aegisadmin-web.service' "${ROOT}/usr/bin/aegisadmin" \
+    || fail "Le lanceur ne sécurise pas les maintenances SQLite."
+if grep -q '^Depends:.*apache2' "${CONTROL}/control"; then
+    fail "Apache ne doit pas être une dépendance obligatoire du paquet."
+fi
+grep -q '^ReadWritePaths=/var/lib/aegisadmin/database /var/lib/aegisadmin/sessions /var/lib/aegisadmin/secrets$' \
+    "${ROOT}/lib/systemd/system/aegisadmin-web.service" \
+    || fail "L’unité web n’autorise pas uniquement les stockages attendus."
 [[ "$(stat -c '%a' "${ROOT}/etc/sudoers.d/aegisadmin")" == 440 ]] \
     || fail "Les droits sudoers du paquet ne sont pas 0440."
 
@@ -77,7 +112,8 @@ done
    ! -e "${ROOT}/etc/aegisadmin-system/tls/admin-local.key" ]] \
     || fail "La paire TLS locale ne doit jamais être embarquée dans le paquet."
 [[ ! -e "${ROOT}/etc/aegisadmin-system/admin-web" && \
-   ! -e "${ROOT}/etc/apache2/sites-available/aegisadmin-admin.conf" ]] \
+   ! -e "${ROOT}/etc/apache2/sites-available/aegisadmin-admin.conf" && \
+   ! -e "${ROOT}/etc/aegisadmin-system/mysql-client.cnf" ]] \
     || fail "Les configurations dynamiques doivent être créées depuis leurs modèles, pas embarquées comme conffiles."
 
 sort "${CONTROL}/conffiles" > "${WORK_DIRECTORY}/conffiles.sorted"

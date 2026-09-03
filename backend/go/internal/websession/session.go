@@ -50,11 +50,13 @@ type Session struct {
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	sessions map[string]Session
-	config   Config
-	now      func() time.Time
-	random   io.Reader
+	mu              sync.Mutex
+	sessions        map[string]Session
+	config          Config
+	now             func() time.Time
+	random          io.Reader
+	persistencePath string
+	lastPersistence time.Time
 }
 
 func New(config Config) (*Manager, error) {
@@ -75,18 +77,45 @@ func (m *Manager) Create(state State, userID, authVersion int64) (Session, error
 	if len(m.sessions) >= m.config.MaximumSessions {
 		return Session{}, ErrCapacity
 	}
-	return m.createLocked(state, userID, authVersion)
+	session, err := m.createLocked(state, userID, authVersion)
+	if err != nil {
+		return Session{}, err
+	}
+	if state == StateAuthenticated {
+		if err := m.persistLocked(); err != nil {
+			delete(m.sessions, session.ID)
+			return Session{}, err
+		}
+	}
+	return session, nil
 }
 
 func (m *Manager) Rotate(id string, state State, userID, authVersion int64) (Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	previous, hadPrevious := m.sessions[id]
 	delete(m.sessions, id)
 	m.removeExpiredLocked()
 	if len(m.sessions) >= m.config.MaximumSessions {
 		return Session{}, ErrCapacity
 	}
-	return m.createLocked(state, userID, authVersion)
+	session, err := m.createLocked(state, userID, authVersion)
+	if err != nil {
+		if hadPrevious {
+			m.sessions[id] = previous
+		}
+		return Session{}, err
+	}
+	if previous.State == StateAuthenticated || state == StateAuthenticated {
+		if err := m.persistLocked(); err != nil {
+			delete(m.sessions, session.ID)
+			if hadPrevious {
+				m.sessions[id] = previous
+			}
+			return Session{}, err
+		}
+	}
+	return session, nil
 }
 
 func (m *Manager) Get(id string) (Session, bool) {
@@ -99,6 +128,9 @@ func (m *Manager) Get(id string) (Session, bool) {
 	}
 	session.LastSeenAt = m.now().UTC()
 	m.sessions[id] = session
+	if session.State == StateAuthenticated && m.persistencePath != "" && session.LastSeenAt.Sub(m.lastPersistence) >= time.Minute {
+		_ = m.persistLocked()
+	}
 	return session, true
 }
 
@@ -113,10 +145,18 @@ func (m *Manager) ValidateCSRF(id, token string) bool {
 		subtle.ConstantTimeCompare(expected, actual) == 1
 }
 
-func (m *Manager) Destroy(id string) {
+func (m *Manager) Destroy(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	previous, found := m.sessions[id]
 	delete(m.sessions, id)
+	if found && previous.State == StateAuthenticated {
+		if err := m.persistLocked(); err != nil {
+			m.sessions[id] = previous
+			return err
+		}
+	}
+	return nil
 }
 
 func Cookie(id string) *http.Cookie {

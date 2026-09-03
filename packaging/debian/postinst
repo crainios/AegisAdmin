@@ -5,12 +5,16 @@ case "${1:-configure}" in
     configure)
         database_was_present=false
         [ -s /var/lib/aegisadmin/database/aegisadmin.sqlite ] && database_was_present=true
-        for command in getent adduser addgroup install openssl runuser a2enmod a2ensite a2dissite apachectl systemctl; do
+        for command in getent adduser addgroup install openssl runuser sed apt-get systemctl; do
             if ! command -v "${command}" >/dev/null 2>&1; then
                 printf 'Commande indispensable absente : %s\n' "${command}" >&2
                 exit 1
             fi
         done
+		apache_present=false
+		if command -v apachectl >/dev/null 2>&1 && command -v a2enmod >/dev/null 2>&1 && command -v a2ensite >/dev/null 2>&1; then
+			apache_present=true
+		fi
         if ! getent passwd aegisadmin >/dev/null; then
             adduser --system --group --home /var/lib/aegisadmin \
                 --no-create-home aegisadmin >/dev/null
@@ -22,10 +26,20 @@ case "${1:-configure}" in
         install -d -o aegisadmin -g aegisadmin-web -m 2770 \
             /var/lib/aegisadmin/database \
             /var/lib/aegisadmin/database/backups
+        install -d -o aegisadmin -g aegisadmin -m 0700 \
+            /var/lib/aegisadmin/sessions \
+            /var/lib/aegisadmin/secrets
         install -d -o root -g root -m 0750 \
             /var/lib/aegisadmin/configuration/snapshots
         install -d -o root -g aegisadmin-web -m 0750 \
+            /var/lib/aegisadmin/updates \
+            /var/lib/aegisadmin/updates/jobs
+        install -d -o root -g aegisadmin-web -m 0750 \
             /etc/aegisadmin-system
+        install -d -o root -g root -m 0700 \
+            /etc/aegisadmin-system/backup-tasks \
+            /etc/aegisadmin-system/backup-ssh \
+            /var/backups/aegisadmin
         install -d -o root -g aegisadmin-web -m 0750 \
             /etc/aegisadmin-system/tls
         if [ ! -e /etc/aegisadmin-system/admin-web ]; then
@@ -33,11 +47,20 @@ case "${1:-configure}" in
                 /usr/share/aegisadmin/defaults/admin-web \
                 /etc/aegisadmin-system/admin-web
         fi
-        if [ ! -e /etc/apache2/sites-available/aegisadmin-admin.conf ]; then
+        if [ "${apache_present}" = true ] && [ ! -e /etc/apache2/sites-available/aegisadmin-admin.conf ]; then
             install -o root -g root -m 0644 \
                 /usr/share/aegisadmin/defaults/aegisadmin-admin.conf \
                 /etc/apache2/sites-available/aegisadmin-admin.conf
         fi
+		if ! grep -q '^AEGISADMIN_WEB_ALLOW_FROM=' /etc/aegisadmin-system/web-server; then
+			printf '%s\n' 'AEGISADMIN_WEB_ALLOW_FROM=all' >> /etc/aegisadmin-system/web-server
+		fi
+		if [ "${apache_present}" = false ] && grep -q '^AEGISADMIN_WEB_LISTEN=127\.0\.0\.1:9080$' /etc/aegisadmin-system/web-server; then
+			sed -i 's|^AEGISADMIN_WEB_LISTEN=.*|AEGISADMIN_WEB_LISTEN=:8443|' /etc/aegisadmin-system/web-server
+		elif [ "${apache_present}" = true ]; then
+			sed -i 's|^AEGISADMIN_WEB_LISTEN=.*|AEGISADMIN_WEB_LISTEN=127.0.0.1:9080|' /etc/aegisadmin-system/web-server
+			sed -i 's|^AEGISADMIN_WEB_ALLOW_FROM=.*|AEGISADMIN_WEB_ALLOW_FROM=all|' /etc/aegisadmin-system/web-server
+		fi
 
         if [ -L /etc/aegisadmin-system/tls/admin-local.key ] || \
            [ -L /etc/aegisadmin-system/tls/admin-local.crt ]; then
@@ -71,18 +94,20 @@ case "${1:-configure}" in
             exit 1
         fi
 
-		site_was_enabled=false
-		[ -L /etc/apache2/sites-enabled/aegisadmin-admin.conf ] && site_was_enabled=true
-		a2enmod ssl headers proxy proxy_http >/dev/null
-		a2ensite aegisadmin-admin.conf >/dev/null
-		if ! apachectl configtest; then
-			if [ "${site_was_enabled}" = false ]; then
-				a2dissite aegisadmin-admin.conf >/dev/null 2>&1 || true
+		if [ "${apache_present}" = true ]; then
+			site_was_enabled=false
+			[ -L /etc/apache2/sites-enabled/aegisadmin-admin.conf ] && site_was_enabled=true
+			a2enmod ssl headers proxy proxy_http >/dev/null
+			a2ensite aegisadmin-admin.conf >/dev/null
+			if ! apachectl configtest; then
+				if [ "${site_was_enabled}" = false ]; then
+					a2dissite aegisadmin-admin.conf >/dev/null 2>&1 || true
+				fi
+				printf '%s\n' \
+					'Le contrôle global de la configuration Apache a échoué.' \
+					'La situation d’activation antérieure du site AegisAdmin a été conservée ; corrigez Apache puis relancez la configuration du paquet.' >&2
+				exit 1
 			fi
-			printf '%s\n' \
-				'Le contrôle global de la configuration Apache a échoué.' \
-				'La situation d’activation antérieure du site AegisAdmin a été conservée ; corrigez Apache puis relancez la configuration du paquet.' >&2
-			exit 1
 		fi
 
         systemctl daemon-reload
@@ -92,14 +117,23 @@ case "${1:-configure}" in
 		/usr/bin/aegisadmin-system-go admin-access reconcile-package >/dev/null
 
 		/usr/libexec/aegisadmin/aegisadmin-admin migrate
+		if systemctl is-active --quiet mysql.service || \
+		   systemctl is-active --quiet mariadb.service || \
+		   systemctl is-active --quiet mysqld.service; then
+			/usr/libexec/aegisadmin/aegisadmin-admin configure-mysql-auto
+		fi
 		find /var/lib/aegisadmin/database -maxdepth 1 -type f \
 			\( -name '*.sqlite' -o -name '*.sqlite-wal' -o -name '*.sqlite-shm' \) \
 			-exec chown aegisadmin:aegisadmin-web {} + \
 			-exec chmod 0660 {} +
 		systemctl restart aegisadmin-web.service
-		systemctl restart apache2
+		if [ "${apache_present}" = true ]; then
+			systemctl restart apache2
+		fi
 		sleep 1
-		for service in aegisadmin-system.service aegisadmin-web.service apache2.service; do
+		services='aegisadmin-system.service aegisadmin-web.service'
+		[ "${apache_present}" = true ] && services="${services} apache2.service"
+		for service in ${services}; do
 			if ! systemctl is-active --quiet "${service}"; then
 				printf 'Le service %s n’est pas resté actif après son redémarrage.\n' "${service}" >&2
 				exit 1

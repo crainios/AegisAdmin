@@ -21,6 +21,7 @@ const (
 	apacheProfile = "/etc/aegisadmin-system/apache"
 	certificate   = "/etc/aegisadmin-system/tls/admin-local.crt"
 	privateKey    = "/etc/aegisadmin-system/tls/admin-local.key"
+	webProfile    = "/etc/aegisadmin-system/web-server"
 )
 
 type Handler struct{}
@@ -88,9 +89,13 @@ func status() map[string]any {
 		return map[string]any{"available": false, "enabled": false, "message": "Le profil de l’accès dédié est indisponible."}
 	}
 	a := loadApache(apacheProfile)
+	if !apacheAvailable(a) {
+		addresses, _ := parseAddresses(p.Address)
+		return map[string]any{"available": true, "enabled": p.Enabled, "address": strings.Join(addresses, "\n"), "port": p.Port, "allow_from": p.AllowFrom, "url": fmt.Sprintf("https://adresse-ip-du-serveur:%d", p.Port), "mode": "direct", "message": "Accès HTTPS fourni directement par le serveur Go."}
+	}
 	_, enabledErr := os.Lstat(filepath.Join(a.SitesEnabled, "aegisadmin-admin.conf"))
 	addresses, _ := parseAddresses(p.Address)
-	return map[string]any{"available": true, "enabled": p.Enabled && enabledErr == nil, "address": strings.Join(addresses, "\n"), "port": p.Port, "allow_from": p.AllowFrom, "url": fmt.Sprintf("https://adresse-ip-du-serveur:%d", p.Port), "message": ""}
+	return map[string]any{"available": true, "enabled": p.Enabled && enabledErr == nil, "address": strings.Join(addresses, "\n"), "port": p.Port, "allow_from": p.AllowFrom, "url": fmt.Sprintf("https://adresse-ip-du-serveur:%d", p.Port), "mode": "apache", "message": "Accès HTTPS publié par Apache."}
 }
 
 func update(ctx context.Context, s settings) (map[string]any, error) {
@@ -102,6 +107,9 @@ func update(ctx context.Context, s settings) (map[string]any, error) {
 		return nil, fmt.Errorf("le profil de l’accès dédié est introuvable")
 	}
 	a := loadApache(apacheProfile)
+	if !apacheAvailable(a) {
+		return updateDirect(ctx, p, s)
+	}
 	if !filepath.IsAbs(p.AppRoot) || strings.ContainsAny(p.AppRoot, "\"\r\n") {
 		return nil, fmt.Errorf("la racine AegisAdmin enregistrée est invalide")
 	}
@@ -182,6 +190,67 @@ func update(ctx context.Context, s settings) (map[string]any, error) {
 		return nil, fmt.Errorf("le profil de l’accès dédié n’a pas pu être enregistré")
 	}
 	return status(), nil
+}
+
+func updateDirect(ctx context.Context, p profile, s settings) (map[string]any, error) {
+	for _, file := range []string{adminProfile, webProfile} {
+		if info, err := os.Lstat(file); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("un fichier géré ne doit pas être un lien symbolique")
+		}
+	}
+	addresses, _ := parseAddresses(s.Address)
+	listeners := directListenAddresses(addresses, s.Port, s.Enabled)
+	oldWeb, webErr := os.ReadFile(webProfile)
+	oldAdmin, adminErr := os.ReadFile(adminProfile)
+	restore := func() {
+		if webErr == nil {
+			_ = atomicWrite(webProfile, oldWeb, 0640)
+		}
+		if adminErr == nil {
+			_ = atomicWrite(adminProfile, oldAdmin, 0640)
+		}
+		_, _ = run(ctx, "/usr/bin/systemctl", "restart", "aegisadmin-web.service")
+	}
+	webContent := fmt.Sprintf("# Adresse HTTPS du serveur web Go AegisAdmin.\nAEGISADMIN_WEB_LISTEN=%s\nAEGISADMIN_WEB_ALLOW_FROM=%s\n", strings.Join(listeners, ","), s.AllowFrom)
+	if err := atomicWrite(webProfile, []byte(webContent), 0640); err != nil {
+		return nil, fmt.Errorf("le profil du serveur web Go n’a pas pu être enregistré")
+	}
+	p.Enabled, p.Address, p.Port, p.AllowFrom = s.Enabled, strings.Join(addresses, ","), s.Port, s.AllowFrom
+	adminContent := fmt.Sprintf("enabled=%t\napp_root=%s\naddress=%s\nport=%d\nallow_from=%s\n", p.Enabled, p.AppRoot, p.Address, p.Port, p.AllowFrom)
+	if err := atomicWrite(adminProfile, []byte(adminContent), 0640); err != nil {
+		restore()
+		return nil, fmt.Errorf("le profil de l’accès dédié n’a pas pu être enregistré")
+	}
+	if output, err := run(ctx, "/usr/bin/systemctl", "restart", "aegisadmin-web.service"); err != nil {
+		restore()
+		return nil, fmt.Errorf("le serveur web Go n’a pas pu être redémarré : %s", strings.TrimSpace(output))
+	}
+	return status(), nil
+}
+
+func directListenAddresses(addresses []string, port int, enabled bool) []string {
+	if !enabled {
+		return []string{"127.0.0.1:9080"}
+	}
+	listeners := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if address == "*" {
+			listeners = append(listeners, ":"+strconv.Itoa(port))
+		} else {
+			listeners = append(listeners, net.JoinHostPort(address, strconv.Itoa(port)))
+		}
+	}
+	return listeners
+}
+
+func apacheAvailable(a apache) bool {
+	for _, path := range []string{a.Control, a.EnableCommand, a.DisableCommand} {
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func validate(s settings) error {

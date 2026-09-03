@@ -6,6 +6,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -124,6 +125,15 @@ func renderCertificates(items []webcertbot.Certificate, token string, actions bo
 	if len(items) == 0 {
 		return `<tr><td colspan="` + strconv.Itoa(columns) + `" class="muted">Aucun certificat détecté.</td></tr>`
 	}
+	items = append([]webcertbot.Certificate(nil), items...)
+	sort.SliceStable(items, func(left, right int) bool {
+		leftDomains := strings.ToLower(strings.Join(items[left].Domains, ", "))
+		rightDomains := strings.ToLower(strings.Join(items[right].Domains, ", "))
+		if leftDomains == rightDomains {
+			return strings.ToLower(items[left].Name) < strings.ToLower(items[right].Name)
+		}
+		return leftDomains < rightDomains
+	})
 	var b strings.Builder
 	for _, i := range items {
 		state, class := "Expiré", "danger"
@@ -191,13 +201,10 @@ func (a *application) updates(response http.ResponseWriter, request *http.Reques
 		}
 		composerState = `<p class="notice">` + html.EscapeString(message) + `</p>`
 	}
-	notice := ""
-	if id := request.URL.Query().Get("job"); id != "" {
-		notice = `<p class="notice notice--success">Mise à jour démarrée. <a href="/updates/jobs/` + url.PathEscape(id) + `">Suivre la progression</a>.</p>`
-	}
-	page := strings.NewReplacer("{{CSRF}}", token, "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", notice, "{{SUMMARY}}", renderMetricPairs([][2]string{{"Gestionnaire", s.Info.Backend}, {"Paquets", strconv.Itoa(s.Info.UpdateCount)}, {"Sécurité", strconv.Itoa(s.Info.SecurityUpdateCount)}, {"Redémarrage", yesNo(s.Info.RebootRequired)}}), "{{ACTIONS}}", actions, "{{PACKAGES}}", renderUpdates(s.Updates), "{{FIRMWARE}}", renderFirmware(s.Firmware.Updates), "{{COMPOSER}}", renderComposer(s.Composer.Sites), "{{COMPOSER_ACTION}}", composerAction, "{{COMPOSER_STATUS}}", html.EscapeString(composerStatus), "{{COMPOSER_STATE}}", composerState, "{{COMPOSER_REFRESHING}}", strconv.FormatBool(s.Composer.Refreshing)).Replace(a.updatesPage)
+	page := strings.NewReplacer("{{CSRF}}", token, "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", "", "{{SUMMARY}}", renderMetricPairs([][2]string{{"Gestionnaire", s.Info.Backend}, {"Paquets", strconv.Itoa(s.Info.UpdateCount)}, {"Sécurité", strconv.Itoa(s.Info.SecurityUpdateCount)}, {"Redémarrage", yesNo(s.Info.RebootRequired)}}), "{{ACTIONS}}", actions, "{{PACKAGES}}", renderUpdates(s.Updates), "{{FIRMWARE}}", renderFirmware(s.Firmware.Updates), "{{COMPOSER}}", renderComposer(s.Composer.Sites), "{{COMPOSER_ACTION}}", composerAction, "{{COMPOSER_STATUS}}", html.EscapeString(composerStatus), "{{COMPOSER_STATE}}", composerState, "{{COMPOSER_REFRESHING}}", strconv.FormatBool(s.Composer.Refreshing)).Replace(a.updatesPage)
 	writeHTML(response, page, http.StatusOK)
 }
+
 func (a *application) startUpdates(response http.ResponseWriter, request *http.Request) {
 	session, user, found := a.authenticatedUser(response, request)
 	if !found {
@@ -225,18 +232,6 @@ func (a *application) startUpdates(response http.ResponseWriter, request *http.R
 	http.Redirect(response, request, "/updates?job="+url.QueryEscape(id), http.StatusSeeOther)
 }
 func (a *application) updatesJob(response http.ResponseWriter, request *http.Request) {
-	_, user, found := a.authenticatedUser(response, request)
-	if !found {
-		return
-	}
-	_, granted, ok := a.modulePermission(response, request, user, "updates")
-	if !ok {
-		return
-	}
-	if !granted {
-		http.Error(response, "Accès interdit.", http.StatusForbidden)
-		return
-	}
 	ctx, cancel := contextWithTimeout(request, 10*time.Second)
 	defer cancel()
 	job, err := a.dependencies.Updates.Job(ctx, request.PathValue("id"))
@@ -244,6 +239,33 @@ func (a *application) updatesJob(response http.ResponseWriter, request *http.Req
 		http.Error(response, "Suivi indisponible.", http.StatusNotFound)
 		return
 	}
+	// Les sessions web sont volontairement en mémoire et disparaissent quand le
+	// paquet redémarre le serveur. L’identifiant aléatoire de 128 bits sert alors
+	// de capacité temporaire pour que la modale puisse lire la fin de son travail.
+	if _, sessionFound := a.requestSession(request); sessionFound {
+		_, user, found := a.authenticatedUser(response, request)
+		if !found {
+			return
+		}
+		_, granted, ok := a.modulePermission(response, request, user, "updates")
+		if !ok {
+			return
+		}
+		if !granted {
+			http.Error(response, "Accès interdit.", http.StatusForbidden)
+			return
+		}
+	} else {
+		started, parseErr := time.Parse(time.RFC3339, job.StartedAt)
+		age := time.Since(started)
+		if parseErr != nil || age < -5*time.Minute || age > 4*time.Hour {
+			http.Error(response, "Suivi indisponible.", http.StatusNotFound)
+			return
+		}
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("Referrer-Policy", "no-referrer")
+	response.Header().Set("X-Robots-Tag", "noindex, nofollow")
 	writeJSON(response, job, http.StatusOK)
 }
 func (a *application) refreshComposer(response http.ResponseWriter, request *http.Request) {
@@ -325,6 +347,9 @@ func renderComposerDetails(site webupdates.ComposerSite, index int) string {
 	b.WriteString(`<button class="secondary-button compact-link" type="button" data-composer-detail-open="` + id + `">Détails</button><template id="` + id + `"><div class="composer-details"><p><strong>Site : </strong>` + html.EscapeString(site.Domain) + `</p>`)
 	if site.Message != "" {
 		b.WriteString(`<p class="notice">` + html.EscapeString(site.Message) + `</p>`)
+	}
+	if site.SecurityStatus == "error" && site.SecurityMessage != "" {
+		b.WriteString(`<p class="notice notice--danger">` + html.EscapeString(site.SecurityMessage) + `</p>`)
 	}
 	b.WriteString(`<h3>Alertes de sécurité</h3><div class="table-scroll"><table class="data-table data-table--nested"><thead><tr><th>Paquet</th><th>Alerte</th><th>Versions affectées</th><th>Référence</th></tr></thead><tbody>`)
 	if len(site.SecurityAdvisories) == 0 {

@@ -33,7 +33,12 @@ def fail(message: str) -> "NoReturn":
     raise SystemExit(2)
 
 
-def allowed_user(name: str) -> bool:
+def allowed_user(name: str, command: str) -> bool:
+    if name == "root":
+        return re.fullmatch(
+            r"/usr/libexec/aegisadmin/aegisadmin-backup [a-f0-9-]{36}",
+            command,
+        ) is not None
     minimum = 1000
     try:
         for raw in LOGIN_DEFS_FILE.read_text(encoding="utf-8").splitlines():
@@ -93,7 +98,7 @@ def validate_arguments() -> tuple[str, str, str]:
     if EXECUTION_ID_PATTERN.fullmatch(execution_id) is None:
         fail("L’identifiant d’exécution Cron est invalide.")
 
-    if not allowed_user(user):
+    if not allowed_user(user, command):
         fail("L’utilisateur Cron demandé n’est pas autorisé.")
 
     if (
@@ -206,6 +211,7 @@ def terminate_process_group(process: subprocess.Popen[bytes]) -> None:
 
 def capture_output(
     process: subprocess.Popen[bytes],
+    max_duration: float,
 ) -> tuple[bytes, bytes, bool, bool]:
     selector = selectors.DefaultSelector()
     streams: dict[BinaryIO, str] = {}
@@ -216,7 +222,7 @@ def capture_output(
     stored_bytes = 0
     truncated = False
     timed_out = False
-    deadline = time.monotonic() + MAX_DURATION_SECONDS
+    deadline = time.monotonic() + max_duration
 
     if process.stdout is not None:
         selector.register(process.stdout, selectors.EVENT_READ)
@@ -307,7 +313,8 @@ def execute(user: str, command: str) -> dict[str, object]:
         preexec_fn=lambda: drop_privileges(account),
         start_new_session=True,
     )
-    stdout, stderr, timed_out, truncated = capture_output(process)
+    max_duration = 2 * 60 * 60 if user == "root" else MAX_DURATION_SECONDS
+    stdout, stderr, timed_out, truncated = capture_output(process, max_duration)
     duration_ms = max(
         0,
         round((time.monotonic() - started_at) * 1000),

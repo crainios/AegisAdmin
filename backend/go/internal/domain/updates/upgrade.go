@@ -5,9 +5,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"aegisadmin/backend/internal/api"
@@ -21,97 +27,213 @@ const (
 )
 
 type upgradeJob struct {
-	ID         string
-	Status     string
-	Backend    string
-	Lines      []string
-	ExitCode   *int
-	StartedAt  string
-	FinishedAt *string
+	ID            string   `json:"job_id"`
+	Status        string   `json:"status"`
+	Backend       string   `json:"backend"`
+	Lines         []string `json:"lines"`
+	ExitCode      *int     `json:"exit_code"`
+	StartedAt     string   `json:"started_at"`
+	FinishedAt    *string  `json:"finished_at"`
+	VersionBefore string   `json:"version_before,omitempty"`
+	VersionAfter  string   `json:"version_after,omitempty"`
 }
 
+type upgradeStore struct{ root string }
+type updaterCommands struct{ aptGet, dnf string }
+
 func (b *Backend) startUpgrade() protocol.Reply {
-	manager, binary, arguments := "", "", []string{}
-	if executable(b.apt) {
-		manager, binary, arguments = "apt", b.apt, []string{"-y", "upgrade"}
+	b.upgradeMu.Lock()
+	defer b.upgradeMu.Unlock()
+	store := upgradeStore{root: b.updateState}
+	if err := store.validate(); err != nil {
+		return fail(10, "UPDATE_STATE_INVALID", "Le répertoire de suivi des mises à jour n’est pas sécurisé.")
+	}
+	if current, err := store.current(); err == nil {
+		if job, readErr := store.read(current); readErr == nil && (job.Status == "pending" || job.Status == "running") {
+			unit := "aegisadmin-updater@" + job.ID + ".service"
+			active := -1
+			if b.runner != nil && executable(b.systemctl) {
+				_, active = b.runner.Run(context.Background(), b.systemctl, "is-active", "--quiet", unit)
+			}
+			started, _ := time.Parse(time.RFC3339, job.StartedAt)
+			if active == 0 || time.Since(started) < 30*time.Second {
+				return protocol.Reply{Response: api.Success(map[string]any{"job_id": job.ID, "already_running": true})}
+			}
+			exitCode := -1
+			job.Status, job.ExitCode = "failed", &exitCode
+			finished := time.Now().UTC().Format(time.RFC3339)
+			job.FinishedAt = &finished
+			appendUpgradeLine(&job, "Le service de mise à jour n’est plus actif ; le travail a été clôturé.")
+			_ = store.write(job)
+		}
+	}
+	manager := ""
+	if executable(b.apt) && executable(b.aptGet) {
+		manager = "apt"
 	} else if executable(b.dnf) {
-		manager, binary, arguments = "dnf", b.dnf, []string{"-y", "upgrade"}
+		manager = "dnf"
 	} else {
 		return fail(3, "DEPENDENCY_NOT_FOUND", "Aucun gestionnaire de mises à jour APT ou DNF pris en charge n’est installé.")
 	}
-
-	b.jobsMu.Lock()
-	if b.activeJobID != "" {
-		job := b.jobs[b.activeJobID]
-		if job != nil && job.Status == "running" {
-			id := job.ID
-			b.jobsMu.Unlock()
-			return protocol.Reply{Response: api.Success(map[string]any{"job_id": id, "already_running": true})}
-		}
+	if !executable(b.systemctl) {
+		return fail(3, "DEPENDENCY_NOT_FOUND", "systemd est nécessaire pour isoler l’installation des mises à jour.")
 	}
 	id, err := newJobID()
 	if err != nil {
-		b.jobsMu.Unlock()
 		return fail(10, "JOB_ID_GENERATION_FAILED", "Le suivi de la mise à jour n’a pas pu être initialisé.")
 	}
-	job := &upgradeJob{ID: id, Status: "running", Backend: manager, Lines: []string{"Initialisation de la mise à jour des paquets…"}, StartedAt: time.Now().UTC().Format(time.RFC3339)}
-	if b.jobs == nil {
-		b.jobs = make(map[string]*upgradeJob)
+	job := upgradeJob{ID: id, Status: "pending", Backend: manager, Lines: []string{"Préparation du service indépendant de mise à jour…"}, StartedAt: time.Now().UTC().Format(time.RFC3339), VersionBefore: installedVersion()}
+	if err := store.create(job); err != nil {
+		return fail(10, "UPDATE_JOB_CREATE_FAILED", "Le travail de mise à jour n’a pas pu être enregistré.")
 	}
-	b.jobs = map[string]*upgradeJob{id: job}
-	b.activeJobID = id
-	b.jobsMu.Unlock()
-
-	go b.runUpgrade(job, binary, arguments)
+	unit := "aegisadmin-updater@" + id + ".service"
+	_, status := b.runner.Run(context.Background(), b.systemctl, "start", "--no-block", unit)
+	if status != 0 {
+		exitCode := -1
+		job.Status, job.ExitCode = "failed", &exitCode
+		finished := time.Now().UTC().Format(time.RFC3339)
+		job.FinishedAt = &finished
+		job.Lines = append(job.Lines, "Le service indépendant de mise à jour n’a pas pu démarrer.")
+		_ = store.write(job)
+		return fail(10, "UPDATE_SERVICE_START_FAILED", "Le service indépendant de mise à jour n’a pas pu démarrer.")
+	}
 	return protocol.Reply{Response: api.Success(map[string]any{"job_id": id, "already_running": false})}
 }
 
-func (b *Backend) runUpgrade(job *upgradeJob, binary string, arguments []string) {
-	ctx, cancel := context.WithTimeout(context.Background(), upgradeTimeout)
+func (b *Backend) upgradeStatus(id string) protocol.Reply {
+	if !validJobID(id) {
+		return fail(2, "INVALID_JOB_ID", "L’identifiant du travail de mise à jour est invalide.")
+	}
+	job, err := (upgradeStore{root: b.updateState}).read(id)
+	if err != nil {
+		return fail(4, "UPDATE_JOB_NOT_FOUND", "Le travail de mise à jour demandé est introuvable.")
+	}
+	return protocol.Reply{Response: api.Success(map[string]any{"job_id": job.ID, "status": job.Status, "backend": job.Backend, "lines": job.Lines, "exit_code": job.ExitCode, "started_at": job.StartedAt, "finished_at": job.FinishedAt, "version_before": job.VersionBefore, "version_after": job.VersionAfter})}
+}
+
+// RunUpdater executes a persisted job from the independent systemd unit.
+func RunUpdater(jobID, stateDirectory string) error {
+	return runUpdater(context.Background(), jobID, upgradeStore{root: stateDirectory}, updaterCommands{aptGet: aptGetCommand, dnf: dnfCommand})
+}
+
+func runUpdater(parent context.Context, jobID string, store upgradeStore, commands updaterCommands) error {
+	if !validJobID(jobID) {
+		return errors.New("invalid update job id")
+	}
+	if err := store.validate(); err != nil {
+		return err
+	}
+	lock, err := store.lock()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); _ = lock.Close() }()
+	job, err := store.read(jobID)
+	if err != nil {
+		return err
+	}
+	if job.Status != "pending" {
+		return errors.New("update job is not pending")
+	}
+	job.Status = "running"
+	appendUpgradeLine(&job, "Le service indépendant a démarré.")
+	if err := store.write(job); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(parent, upgradeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, arguments...)
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C", "DEBIAN_FRONTEND=noninteractive"}
-	pipe, err := cmd.StdoutPipe()
+	steps := [][]string{}
+	switch job.Backend {
+	case "apt":
+		if !executable(commands.aptGet) {
+			return finishUpgrade(store, &job, -1, "La commande apt-get est introuvable.")
+		}
+		steps = [][]string{
+			{commands.aptGet, "update"},
+			{commands.aptGet, "-y", "--with-new-pkgs", "-o", "Dpkg::Options::=--force-confold", "upgrade"},
+		}
+	case "dnf":
+		if !executable(commands.dnf) {
+			return finishUpgrade(store, &job, -1, "La commande dnf est introuvable.")
+		}
+		steps = [][]string{{commands.dnf, "-y", "upgrade"}}
+	default:
+		return finishUpgrade(store, &job, -1, "Le gestionnaire de paquets enregistré est invalide.")
+	}
+	for _, step := range steps {
+		exitCode, runErr := runUpgradeCommand(ctx, store, &job, step[0], step[1:]...)
+		if runErr != nil || exitCode != 0 {
+			if ctx.Err() == context.DeadlineExceeded {
+				return finishUpgrade(store, &job, -1, "La mise à jour a dépassé la durée maximale autorisée.")
+			}
+			return finishUpgrade(store, &job, exitCode, "La mise à jour des paquets s’est terminée avec une erreur.")
+		}
+	}
+	job.VersionAfter = installedVersion()
+	return finishUpgrade(store, &job, 0, "Mise à jour des paquets terminée avec succès.")
+}
+
+func runUpgradeCommand(ctx context.Context, store upgradeStore, job *upgradeJob, binary string, arguments ...string) (int, error) {
+	appendUpgradeLine(job, fmt.Sprintf("$ %s %s", filepath.Base(binary), strings.Join(arguments, " ")))
+	if err := store.write(*job); err != nil {
+		return -1, err
+	}
+	command := exec.CommandContext(ctx, binary, arguments...)
+	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C", "DEBIAN_FRONTEND=noninteractive"}
+	pipe, err := command.StdoutPipe()
 	if err == nil {
-		cmd.Stderr = cmd.Stdout
-		err = cmd.Start()
+		command.Stderr = command.Stdout
+		err = command.Start()
 	}
 	if err != nil {
-		b.finishUpgrade(job, -1, "Impossible de démarrer le gestionnaire de paquets.")
-		return
+		return -1, err
 	}
-
 	scanner := bufio.NewScanner(pipe)
 	scanner.Buffer(make([]byte, 4096), 256*1024)
 	for scanner.Scan() {
-		b.appendUpgradeLine(job, scanner.Text())
-	}
-	if scanErr := scanner.Err(); scanErr != nil {
-		b.appendUpgradeLine(job, "La lecture de la sortie du gestionnaire de paquets a été interrompue.")
-	}
-	err = cmd.Wait()
-	exitCode := 0
-	if err != nil {
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			exitCode = exitError.ExitCode()
-		} else {
-			exitCode = -1
+		appendUpgradeLine(job, scanner.Text())
+		if err := store.write(*job); err != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			return -1, err
 		}
 	}
-	if ctx.Err() == context.DeadlineExceeded {
-		exitCode = -1
-		b.finishUpgrade(job, exitCode, "La mise à jour a dépassé la durée maximale autorisée.")
-		return
+	if err := scanner.Err(); err != nil {
+		appendUpgradeLine(job, "La lecture de la sortie du gestionnaire de paquets a été interrompue.")
 	}
-	message := "Mise à jour des paquets terminée avec succès."
-	if exitCode != 0 {
-		message = "La mise à jour des paquets s’est terminée avec une erreur."
+	err = command.Wait()
+	if err == nil {
+		return 0, nil
 	}
-	b.finishUpgrade(job, exitCode, message)
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
+		return exitError.ExitCode(), err
+	}
+	return -1, err
 }
 
-func (b *Backend) appendUpgradeLine(job *upgradeJob, line string) {
+func finishUpgrade(store upgradeStore, job *upgradeJob, exitCode int, message string) error {
+	appendUpgradeLine(job, message)
+	job.ExitCode = &exitCode
+	job.Status = "completed"
+	if exitCode != 0 {
+		job.Status = "failed"
+	}
+	finished := time.Now().UTC().Format(time.RFC3339)
+	job.FinishedAt = &finished
+	if job.VersionAfter == "" {
+		job.VersionAfter = installedVersion()
+	}
+	if err := store.write(*job); err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("package upgrade failed with exit code %d", exitCode)
+	}
+	return nil
+}
+
+func appendUpgradeLine(job *upgradeJob, line string) {
 	line = strings.TrimSpace(strings.ToValidUTF8(line, "�"))
 	if line == "" {
 		return
@@ -119,43 +241,117 @@ func (b *Backend) appendUpgradeLine(job *upgradeJob, line string) {
 	if len(line) > maximumLineSize {
 		line = line[:maximumLineSize] + "…"
 	}
-	b.jobsMu.Lock()
-	defer b.jobsMu.Unlock()
 	job.Lines = append(job.Lines, line)
 	if len(job.Lines) > maximumLogLines {
 		job.Lines = append([]string{"… sortie antérieure tronquée …"}, job.Lines[len(job.Lines)-maximumLogLines+1:]...)
 	}
 }
 
-func (b *Backend) finishUpgrade(job *upgradeJob, exitCode int, message string) {
-	b.jobsMu.Lock()
-	defer b.jobsMu.Unlock()
-	job.Lines = append(job.Lines, message)
-	job.ExitCode = &exitCode
-	job.Status = "completed"
-	if exitCode != 0 {
-		job.Status = "failed"
+func (s upgradeStore) validate() error {
+	info, err := os.Lstat(s.root)
+	if err != nil || !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 || info.Mode().Perm()&0007 != 0 {
+		return errors.New("insecure update state directory")
 	}
-	finishedAt := time.Now().UTC().Format(time.RFC3339)
-	job.FinishedAt = &finishedAt
-	b.activeJobID = ""
+	return nil
 }
 
-func (b *Backend) upgradeStatus(id string) protocol.Reply {
+func (s upgradeStore) jobsDirectory() string    { return filepath.Join(s.root, "jobs") }
+func (s upgradeStore) jobPath(id string) string { return filepath.Join(s.jobsDirectory(), id+".json") }
+
+func (s upgradeStore) create(job upgradeJob) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.jobsDirectory(), 0o750); err != nil {
+		return err
+	}
+	if err := s.write(job); err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(s.root, "current"), []byte(job.ID+"\n"), 0o640)
+}
+
+func (s upgradeStore) write(job upgradeJob) error {
+	if !validJobID(job.ID) {
+		return errors.New("invalid update job id")
+	}
+	payload, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(s.jobPath(job.ID), append(payload, '\n'), 0o640)
+}
+
+func (s upgradeStore) read(id string) (upgradeJob, error) {
+	var job upgradeJob
+	if !validJobID(id) {
+		return job, errors.New("invalid update job id")
+	}
+	payload, err := os.ReadFile(s.jobPath(id))
+	if err != nil {
+		return job, err
+	}
+	if err := json.Unmarshal(payload, &job); err != nil || job.ID != id {
+		return upgradeJob{}, errors.New("invalid update job")
+	}
+	return job, nil
+}
+
+func (s upgradeStore) current() (string, error) {
+	payload, err := os.ReadFile(filepath.Join(s.root, "current"))
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(string(payload))
+	if !validJobID(id) {
+		return "", errors.New("invalid current update job")
+	}
+	return id, nil
+}
+
+func (s upgradeStore) lock() (*os.File, error) {
+	file, err := os.OpenFile(filepath.Join(s.root, "updater.lock"), os.O_CREATE|os.O_RDWR, 0o640)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		return nil, errors.New("another update is running")
+	}
+	return file, nil
+}
+
+func atomicWrite(path string, payload []byte, mode fs.FileMode) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".update-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := temporary.Name()
+	defer func() { _ = os.Remove(name) }()
+	if err := temporary.Chmod(mode); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(payload); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+func validJobID(id string) bool {
 	if len(id) != 32 {
-		return fail(2, "INVALID_JOB_ID", "L’identifiant du travail de mise à jour est invalide.")
+		return false
 	}
-	if _, err := hex.DecodeString(id); err != nil {
-		return fail(2, "INVALID_JOB_ID", "L’identifiant du travail de mise à jour est invalide.")
-	}
-	b.jobsMu.Lock()
-	defer b.jobsMu.Unlock()
-	job := b.jobs[id]
-	if job == nil {
-		return fail(4, "UPDATE_JOB_NOT_FOUND", "Le travail de mise à jour demandé est introuvable.")
-	}
-	lines := append([]string(nil), job.Lines...)
-	return protocol.Reply{Response: api.Success(map[string]any{"job_id": job.ID, "status": job.Status, "backend": job.Backend, "lines": lines, "exit_code": job.ExitCode, "started_at": job.StartedAt, "finished_at": job.FinishedAt})}
+	_, err := hex.DecodeString(id)
+	return err == nil
 }
 
 func newJobID() (string, error) {
@@ -164,4 +360,11 @@ func newJobID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(value), nil
+}
+
+func installedVersion() string {
+	if value, err := os.ReadFile("/usr/share/aegisadmin/VERSION"); err == nil {
+		return strings.TrimSpace(string(value))
+	}
+	return ""
 }

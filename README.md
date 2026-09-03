@@ -32,6 +32,10 @@ contrôlées par domaine et par niveau d'autorisation : Consultation, Actions ou
 Modification. L'application comprend également la protection CSRF, des
 sessions sécurisées, la double authentification TOTP et un journal des accès.
 
+Les mises à jour de paquets sont confiées à une unité systemd indépendante. Le
+suivi persistant permet à l'interface de retrouver leur progression après son
+propre redémarrage.
+
 Consultez [l'architecture détaillée](docs/ARCHITECTURE.md) et la
 [politique de sécurité](SECURITY.md).
 
@@ -99,4 +103,3 @@ instructions de [SECURITY.md](SECURITY.md).
 
 AegisAdmin est distribué sous licence
 [GNU Affero General Public License v3.0](LICENSE).
-

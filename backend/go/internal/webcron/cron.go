@@ -62,6 +62,11 @@ type ExecutionResult struct {
 	Stdout      string `json:"stdout"`
 	Stderr      string `json:"stderr"`
 }
+type BackupRequest struct {
+	Name, Kind, Source, Destination, Schedule              string
+	RemoteHost, RemoteUser, RemotePort, RemotePath, SSHKey string
+	RetentionDays, RemoveLocal                             string
+}
 type Client struct{ backend Backend }
 
 func New(backend Backend) *Client { return &Client{backend: backend} }
@@ -141,6 +146,35 @@ func (c *Client) CronAction(ctx context.Context, action, user, id, schedule, com
 	value, ok := data["execution_id"].(string)
 	if !ok || len(value) != 32 {
 		return "", errors.New("invalid cron execution")
+	}
+	return value, nil
+}
+
+func (c *Client) CronBackupCreate(ctx context.Context, request BackupRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := c.call("backup-create", []string{request.Name, request.Kind, request.Source, request.Destination, request.Schedule, request.RemoteHost, request.RemoteUser, request.RemotePort, request.RemotePath, request.SSHKey, request.RetentionDays, request.RemoveLocal})
+	return err
+}
+
+func (c *Client) CronBackupAction(ctx context.Context, action, id string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if action != "run" && action != "delete" {
+		return "", errors.New("invalid backup action")
+	}
+	data, err := c.call("backup-"+action, []string{id})
+	if err != nil {
+		return "", err
+	}
+	if action == "delete" {
+		return "", nil
+	}
+	value, ok := data["execution_id"].(string)
+	if !ok {
+		return "", errors.New("invalid backup execution")
 	}
 	return value, nil
 }

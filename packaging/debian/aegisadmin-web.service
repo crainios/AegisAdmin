@@ -2,6 +2,8 @@
 Description=AegisAdmin unprivileged Go web server
 Documentation=file:/usr/share/doc/aegisadmin/debian-packaging.md
 After=network.target aegisadmin-system.service
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -10,15 +12,15 @@ Group=aegisadmin-web
 EnvironmentFile=-/etc/aegisadmin-system/web-server
 ExecStartPre=/usr/bin/test -r /etc/aegisadmin-system/tls/admin-local.crt
 ExecStartPre=/usr/bin/test -r /etc/aegisadmin-system/tls/admin-local.key
-ExecStart=/usr/libexec/aegisadmin/aegisadmin-web --listen ${AEGISADMIN_WEB_LISTEN} --backend-socket /run/aegisadmin-system/backend.sock --database /var/lib/aegisadmin/database/aegisadmin.sqlite --tls-cert /etc/aegisadmin-system/tls/admin-local.crt --tls-key /etc/aegisadmin-system/tls/admin-local.key
+ExecStart=/usr/libexec/aegisadmin/aegisadmin-web --listen ${AEGISADMIN_WEB_LISTEN} --allow-from ${AEGISADMIN_WEB_ALLOW_FROM} --backend-socket /run/aegisadmin-system/backend.sock --database /var/lib/aegisadmin/database/aegisadmin.sqlite --sessions /var/lib/aegisadmin/sessions/sessions.json --secret-key /var/lib/aegisadmin/secrets/settings.key --tls-cert /etc/aegisadmin-system/tls/admin-local.crt --tls-key /etc/aegisadmin-system/tls/admin-local.key
 Restart=on-failure
-RestartSec=2s
+RestartSec=5s
 UMask=0027
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/aegisadmin/database
+ReadWritePaths=/var/lib/aegisadmin/database /var/lib/aegisadmin/sessions /var/lib/aegisadmin/secrets
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true

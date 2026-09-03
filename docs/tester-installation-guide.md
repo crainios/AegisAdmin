@@ -221,6 +221,16 @@ root
 Le prénom, le nom et l’adresse e-mail ne remplacent pas cet identifiant. Ne pas
 relancer l’initialisation si l’outil indique que root existe déjà.
 
+Lorsque MySQL ou MariaDB est actif, le même parcours configure le compte de
+supervision dédié. Si cette étape doit être reprise séparément :
+
+```bash
+sudo aegisadmin mysql-setup
+```
+
+Le mot de passe administrateur SQL est saisi de façon masquée et n’est pas
+enregistré par AegisAdmin.
+
 ## 8. Contrôler les services
 
 ```bash
