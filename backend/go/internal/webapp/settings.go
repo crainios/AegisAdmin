@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"aegisadmin/backend/internal/authstore"
+	"aegisadmin/backend/internal/i18n"
 	"aegisadmin/backend/internal/websettings"
 )
 
 func (a *application) settings(w http.ResponseWriter, r *http.Request) {
-	session, _, ok := a.rootUser(w, r)
+	session, current, ok := a.rootUser(w, r)
 	if !ok {
 		return
 	}
@@ -30,6 +31,10 @@ func (a *application) settings(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Les paramètres n’ont pas pu être chargés.", http.StatusServiceUnavailable)
 		return
+	}
+	defaultLanguage := values.DefaultLanguage
+	if !i18n.Supported(defaultLanguage) {
+		defaultLanguage = a.defaultLanguage(ctx)
 	}
 	smtp, err := a.dependencies.Settings.SMTPSettings(ctx)
 	if err != nil {
@@ -50,8 +55,22 @@ func (a *application) settings(w http.ResponseWriter, r *http.Request) {
 	if admin.Message != "" {
 		message = `<p class="notice">` + html.EscapeString(admin.Message) + `</p>`
 	}
-	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{NOTICE}}", notice, "{{LOG_SOURCES}}", renderSettingLogSources(logSources, values.DefaultLog, logsErr), "{{CERTBOT_EMAIL}}", html.EscapeString(values.CertbotEmail), "{{SMTP_HOST}}", html.EscapeString(smtp.Host), "{{SMTP_USERNAME}}", html.EscapeString(smtp.Username), "{{SMTP_PORT}}", strconv.Itoa(smtp.Port), "{{SMTP_SECURITY}}", renderSMTPSecurity(smtp.Security), "{{SMTP_PASSWORD_MASK}}", smtpPasswordMask(smtp.PasswordConfigured), "{{SMTP_PASSWORD_STATUS}}", smtpPasswordStatus(smtp.PasswordConfigured), "{{ADMIN_MESSAGE}}", message, "{{ADMIN_ENABLED}}", checked(admin.Enabled), "{{ADMIN_ADDRESS}}", html.EscapeString(admin.Address), "{{ADMIN_PORT}}", strconv.Itoa(admin.Port), "{{ADMIN_ALLOW}}", html.EscapeString(admin.AllowFrom)).Replace(a.settingsPage)
+	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{NOTICE}}", notice, "{{DEFAULT_LANGUAGE}}", renderLanguageOptions(defaultLanguage), "{{LOG_SOURCES}}", renderSettingLogSources(logSources, values.DefaultLog, logsErr), "{{CERTBOT_EMAIL}}", html.EscapeString(values.CertbotEmail), "{{SMTP_HOST}}", html.EscapeString(smtp.Host), "{{SMTP_USERNAME}}", html.EscapeString(smtp.Username), "{{SMTP_PORT}}", strconv.Itoa(smtp.Port), "{{SMTP_SECURITY}}", renderSMTPSecurity(smtp.Security), "{{SMTP_PASSWORD_MASK}}", smtpPasswordMask(smtp.PasswordConfigured), "{{SMTP_PASSWORD_STATUS}}", smtpPasswordStatus(smtp.PasswordConfigured), "{{ADMIN_MESSAGE}}", message, "{{ADMIN_ENABLED}}", checked(admin.Enabled), "{{ADMIN_ADDRESS}}", html.EscapeString(admin.Address), "{{ADMIN_PORT}}", strconv.Itoa(admin.Port), "{{ADMIN_ALLOW}}", html.EscapeString(admin.AllowFrom)).Replace(a.settingsPage)
+	page = localizeSettingsHTML(page, a.languageForUser(ctx, current.ID))
 	writeHTML(w, page, http.StatusOK)
+}
+
+func localizeSettingsHTML(value, language string) string {
+	if language != "en" {
+		return value
+	}
+	return strings.NewReplacer(
+		`lang="fr"`, `lang="en"`, "Mot de passe enregistré", "Password saved", "Aucun mot de passe enregistré.", "No password saved.", "Enregistrer la configuration SMTP", "Save SMTP configuration", "Restaurer la sauvegarde", "Restore backup", "Paramètres", "Settings", "Préférences applicatives et accès d’administration", "Application preferences and administration access", "Tableau de bord", "Dashboard", "Se déconnecter", "Sign out", "Les paramètres ont été enregistrés.", "Settings were saved.",
+		"Préférences", "Preferences", "Langue par défaut de l’interface et de la page de connexion", "Default language for the interface and login page", "Journal ouvert par défaut", "Default log to open", "Adresse e-mail utilisée par défaut pour les certificats", "Default email address for certificates", "Enregistrer", "Save",
+		"Serveur de messagerie SMTP", "SMTP mail server", "Ces paramètres seront utilisés pour les futurs envois de notifications. Le mot de passe est chiffré avant son enregistrement en base de données.", "These settings will be used for future notifications. The password is encrypted before being stored in the database.", "Serveur Host", "Server host", "Nom utilisateur (login)", "Username (login)", "Mot de passe", "Password", "Mot de passe enregistré", "Password saved", "Aucun mot de passe enregistré.", "No password saved.", "Effacer le mot de passe enregistré", "Clear saved password", "TLS implicite (SMTPS, SSL)", "Implicit TLS (SMTPS, SSL)", "Aucun", "None", "Enregistrer la configuration SMTP", "Save SMTP configuration",
+		"Accès HTTPS dédié", "Dedicated HTTPS access", "Accès activé", "Access enabled", "Adresses d’écoute", "Listening addresses", "IP ou réseau autorisé", "Allowed IP or network", "Appliquer et recharger Apache", "Apply and reload Apache",
+		"Sauvegarde SQLite", "SQLite backup", "Télécharger une sauvegarde cohérente", "Download a consistent backup", "Restaurer", "Restore", "Je confirme le remplacement de la base active", "I confirm replacement of the active database", "Restaurer la sauvegarde", "Restore backup", "Journaux indisponibles", "Logs unavailable",
+	).Replace(value)
 }
 
 func (a *application) updateSMTPSettings(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +193,11 @@ func (a *application) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	defaultLog := strings.TrimSpace(r.PostForm.Get("default_log"))
 	email := strings.ToLower(strings.TrimSpace(r.PostForm.Get("certbot_email")))
+	defaultLanguage := strings.TrimSpace(r.PostForm.Get("default_language"))
+	if !i18n.Supported(defaultLanguage) {
+		http.Error(w, "Langue par défaut invalide.", http.StatusBadRequest)
+		return
+	}
 	if len(defaultLog) > 128 || strings.ContainsAny(defaultLog, "\x00\r\n") {
 		http.Error(w, "Journal par défaut invalide.", http.StatusBadRequest)
 		return
@@ -196,11 +220,23 @@ func (a *application) updateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := a.dependencies.Settings.UpdateSettings(ctx, authstore.ApplicationSettings{DefaultLog: defaultLog, CertbotEmail: email}); err != nil {
+	if err := a.dependencies.Settings.UpdateSettings(ctx, authstore.ApplicationSettings{DefaultLog: defaultLog, CertbotEmail: email, DefaultLanguage: defaultLanguage}); err != nil {
 		http.Error(w, "Enregistrement impossible.", http.StatusServiceUnavailable)
 		return
 	}
 	http.Redirect(w, r, "/setting?result=updated", http.StatusSeeOther)
+}
+
+func renderLanguageOptions(selected string) string {
+	var result strings.Builder
+	for _, item := range []struct{ value, label string }{{"fr", "Français"}, {"en", "English"}} {
+		result.WriteString(`<option value="` + item.value + `"`)
+		if item.value == selected {
+			result.WriteString(` selected`)
+		}
+		result.WriteString(`>` + item.label + `</option>`)
+	}
+	return result.String()
 }
 
 func renderSettingLogSources(sources []string, selected string, sourceErr error) string {

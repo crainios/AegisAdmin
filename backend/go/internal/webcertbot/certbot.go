@@ -13,6 +13,7 @@ type Backend interface {
 }
 
 type Info struct {
+	Installed                                  bool `json:"installed"`
 	Product, Version, Executable, Installation string
 	Package                                    *string  `json:"package"`
 	PackageVersion                             *string  `json:"package_version"`

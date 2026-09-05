@@ -1,0 +1,20 @@
+# Documentation française d’AegisAdmin
+
+[English documentation](README.md)
+
+- [Architecture](ARCHITECTURE.md)
+- [État du projet](PROJECT_STATUS.md)
+- [Feuille de route](ROADMAP.md)
+- [Accès HTTPS et Apache facultatif](admin-https-access.md)
+- [Paquet Debian](debian-package.md)
+- [Guide d’exploitation](operations.md)
+- [Cycle de vie Debian](debian-lifecycle-tests.md)
+- [Dépôt APT](apt-repository.md)
+- [Guide d’installation pour les testeurs](tester-installation-guide.md)
+- [Récupération du compte root](root-password-recovery.md)
+- [Configuration et snapshots](server-configuration.md)
+- [Modules et droits](modules-and-permissions.md)
+- [Paramètres](settings.md)
+- [Thèmes](themes.md)
+- [Double authentification](two-factor-authentication.md)
+- [Journal des accès](user-access-log.md)

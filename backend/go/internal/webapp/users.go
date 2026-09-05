@@ -14,12 +14,13 @@ import (
 	"unicode/utf8"
 
 	"aegisadmin/backend/internal/authstore"
+	"aegisadmin/backend/internal/i18n"
 	"aegisadmin/backend/internal/webauth"
 	"aegisadmin/backend/internal/websession"
 )
 
 var adminLoginPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`)
-var accessEventLabels = map[string]string{"login_success": "Connexion réussie", "login_failure": "Connexion refusée", "two_factor_success": "Double authentification réussie", "two_factor_failure": "Double authentification refusée", "logout": "Déconnexion", "password_changed": "Mot de passe modifié", "two_factor_enabled": "Double authentification activée", "two_factor_disabled": "Double authentification désactivée"}
+var accessEventLabels = map[string]string{"login_success": "Connexion réussie", "login_failure": "Connexion refusée", "two_factor_success": "Double authentification réussie", "two_factor_failure": "Double authentification refusée", "logout": "Déconnexion", "password_changed": "Mot de passe modifié", "two_factor_enabled": "Double authentification activée", "two_factor_disabled": "Double authentification désactivée", "server_reboot_scheduled": "Redémarrage du serveur programmé"}
 
 func (a *application) users(response http.ResponseWriter, request *http.Request) {
 	session, user, ok := a.rootUser(response, request)
@@ -38,6 +39,7 @@ func (a *application) users(response http.ResponseWriter, request *http.Request)
 		notice = `<p class="notice notice--success">L’opération a été enregistrée.</p>`
 	}
 	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{NOTICE}}", notice, "{{STATISTICS}}", renderUserStatistics(items), "{{USERS}}", renderUserRows(items, user.ID)).Replace(a.usersPage)
+	page = localizeUsersHTML(page, a.languageForUser(ctx, user.ID))
 	writeHTML(response, page, http.StatusOK)
 }
 
@@ -76,6 +78,7 @@ func (a *application) userAccessLog(response http.ResponseWriter, request *http.
 		userOptions += `<option value="` + html.EscapeString(login) + `"` + selected(strings.EqualFold(filter.Login, login)) + `>` + html.EscapeString(login) + `</option>`
 	}
 	var entries strings.Builder
+	language := a.languageForUser(ctx, user.ID)
 	for _, item := range result.Items {
 		outcome, class := "Refusé", "danger"
 		if item.Success {
@@ -85,7 +88,7 @@ func (a *application) userAccessLog(response http.ResponseWriter, request *http.
 		if label == "" {
 			label = item.Event
 		}
-		entries.WriteString(`<tr><td>` + html.EscapeString(item.OccurredAt) + `</td><th>` + html.EscapeString(item.Login) + `</th><td>` + html.EscapeString(label) + `</td><td><span class="status-badge status-badge--` + class + `">` + outcome + `</span></td><td>` + html.EscapeString(item.IPAddress) + `</td><td class="access-log-agent">` + html.EscapeString(item.UserAgent) + `</td></tr>`)
+		entries.WriteString(`<tr><td>` + html.EscapeString(i18n.FormatRFC3339(language, item.OccurredAt)) + `</td><th>` + html.EscapeString(item.Login) + `</th><td>` + html.EscapeString(label) + `</td><td><span class="status-badge status-badge--` + class + `">` + outcome + `</span></td><td>` + html.EscapeString(item.IPAddress) + `</td><td class="access-log-agent">` + html.EscapeString(item.UserAgent) + `</td></tr>`)
 	}
 	if len(result.Items) == 0 {
 		entries.WriteString(`<tr><td colspan="6" class="muted">Aucun événement.</td></tr>`)
@@ -120,11 +123,12 @@ func (a *application) userAccessLog(response http.ResponseWriter, request *http.
 		pagination += `<a class="secondary-link" href="` + html.EscapeString(query(page+1)) + `">Page suivante</a>`
 	}
 	pageHTML := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{USERS}}", userOptions, "{{IP}}", html.EscapeString(filter.IPAddress), "{{EVENTS}}", events, "{{TOTAL}}", strconv.Itoa(result.Total), "{{ENTRIES}}", entries.String(), "{{PAGINATION}}", pagination).Replace(a.userAccessLogPage)
+	pageHTML = localizeUsersHTML(pageHTML, language)
 	writeHTML(response, pageHTML, http.StatusOK)
 }
 
 func (a *application) newUser(response http.ResponseWriter, request *http.Request) {
-	session, _, ok := a.rootUser(response, request)
+	session, current, ok := a.rootUser(response, request)
 	if !ok {
 		return
 	}
@@ -136,6 +140,7 @@ func (a *application) newUser(response http.ResponseWriter, request *http.Reques
 		return
 	}
 	page := a.renderUserCreatePage(session.CSRFToken, modules, nil, authstore.AdminUser{}, "")
+	page = localizeUsersHTML(page, a.languageForUser(ctx, current.ID))
 	writeHTML(response, page, http.StatusOK)
 }
 
@@ -191,6 +196,7 @@ func (a *application) editUser(response http.ResponseWriter, request *http.Reque
 	}
 	content := a.renderAdminUsers(ctx, []authstore.AdminUser{*selectedUser}, modules, session.CSRFToken, current.ID)
 	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{USER}}", content).Replace(a.userEditPage)
+	page = localizeUsersHTML(page, a.languageForUser(ctx, current.ID))
 	writeHTML(response, page, http.StatusOK)
 }
 
@@ -307,8 +313,28 @@ func checked(v bool) string {
 	return ""
 }
 
+func localizeUsersHTML(value, language string) string {
+	if language != "en" {
+		return value
+	}
+	return strings.NewReplacer(
+		`lang="fr"`, `lang="en"`,
+		"Comptes, sécurité et droits par module", "Accounts, security and permissions by module", "Créer un compte et définir ses droits initiaux", "Create an account and define its initial permissions", "Identité, sécurité et droits du compte", "Identity, security and account permissions", "Authentifications et changements de sécurité", "Authentication and security changes",
+		"Modifier un utilisateur", "Edit user", "Nouvel utilisateur", "New user", "Utilisateurs", "Users", "Retour aux utilisateurs", "Back to users", "Retour à la liste", "Back to list", "Se déconnecter", "Sign out",
+		"Synthèse des comptes", "Account summary", "Comptes enregistrés", "Registered accounts", "Root reste protégé. Les autres comptes peuvent être modifiés, suspendus ou supprimés.", "Root remains protected. Other accounts can be edited, suspended or deleted.", "Journal des accès", "Access log",
+		"Compte actuellement connecté", "Currently signed-in account", "L’opération a été enregistrée.", "The operation was saved.", "Aucun compte.", "No account.",
+		"Comptes", "Accounts", "Actifs", "Active", "Suspendus", "Suspended", "2FA activée", "2FA enabled", "Actions", "Actions", "Identifiant", "Username", "Utilisateur", "User", "Prénom", "First name", "Nom", "Last name", "E-mail", "Email", "Type", "Type", "État", "Status", "Actif", "Active", "Suspendu", "Suspended", "Non configurée", "Not configured", "Activée", "Enabled", "Requise", "Required", "Modifier", "Edit",
+		"Mot de passe initial", "Initial password", "2FA obligatoire", "2FA required", "Réinitialiser la double authentification", "Reset two-factor authentication", "Droits par module", "Permissions by module", "Aucun", "None", "Consultation", "View", "Modification", "Modify", "Annuler", "Cancel", "Créer l’utilisateur", "Create user", "Enregistrer", "Save",
+		"Nouveau mot de passe", "New password", "Confirmation", "Confirmation", "Générer un mot de passe", "Generate password", "Afficher", "Show", "Copier", "Copy", "Entre 12 et 128 caractères.", "Between 12 and 128 characters.", "Réinitialiser le mot de passe", "Reset password", "Supprimer", "Delete",
+		"Tous", "All", "Adresse IP", "IP address", "Événement", "Event", "Filtrer", "Filter", "Réinitialiser", "Reset", "événement(s)", "event(s)", "Résultat", "Result", "Navigateur", "Browser", "Aucun événement.", "No event.", "Page précédente", "Previous page", "Page suivante", "Next page", "Refusé", "Denied", "Réussi", "Successful",
+		"Connexion réussie", "Successful login", "Connexion refusée", "Login denied", "Double authentification réussie", "Two-factor authentication successful", "Double authentification refusée", "Two-factor authentication denied", "Déconnexion", "Logout", "Mot de passe modifié", "Password changed", "Double authentification activée", "Two-factor authentication enabled", "Double authentification désactivée", "Two-factor authentication disabled", "Redémarrage du serveur programmé", "Server reboot scheduled",
+		"Vue générale", "Overview", "Supervision", "Monitoring", "Sécurité", "Security", "Mises à jour", "Updates", "Pare-feu", "Firewall", "Stockage", "Storage", "Réseau", "Network", "Journaux", "Logs", "Paramètres", "Settings", "Configuration du serveur", "Server configuration", "À propos", "About",
+		"Cette adresse e-mail est déjà utilisée par un autre utilisateur.", "This email address is already used by another user.", "Cet identifiant est déjà utilisé par un autre utilisateur.", "This username is already used by another user.", "Le mot de passe doit contenir entre 12 et 128 caractères.", "The password must contain between 12 and 128 characters.", "Le compte n’a pas pu être créé. Vérifiez que l’identifiant et l’adresse e-mail ne sont pas déjà utilisés.", "The account could not be created. Check that the username and email address are not already in use.",
+	).Replace(value)
+}
+
 func (a *application) createUser(w http.ResponseWriter, r *http.Request) {
-	session, _, ok := a.rootUser(w, r)
+	session, current, ok := a.rootUser(w, r)
 	if !ok {
 		return
 	}
@@ -333,16 +359,16 @@ func (a *application) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message := userIdentityConflict(items, u); message != "" {
-		writeHTML(w, a.renderUserCreatePage(session.CSRFToken, modules, permissions, u, message), http.StatusConflict)
+		writeHTML(w, localizeUsersHTML(a.renderUserCreatePage(session.CSRFToken, modules, permissions, u, message), a.languageForUser(ctx, current.ID)), http.StatusConflict)
 		return
 	}
 	hash, err := webauth.HashPassword(r.PostForm.Get("password"))
 	if err != nil {
-		writeHTML(w, a.renderUserCreatePage(session.CSRFToken, modules, permissions, u, "Le mot de passe doit contenir entre 12 et 128 caractères."), http.StatusBadRequest)
+		writeHTML(w, localizeUsersHTML(a.renderUserCreatePage(session.CSRFToken, modules, permissions, u, "Le mot de passe doit contenir entre 12 et 128 caractères."), a.languageForUser(ctx, current.ID)), http.StatusBadRequest)
 		return
 	}
 	if _, err = a.dependencies.UserAdmin.CreateAdminUser(ctx, u, hash, permissions); err != nil {
-		writeHTML(w, a.renderUserCreatePage(session.CSRFToken, modules, permissions, u, "Le compte n’a pas pu être créé. Vérifiez que l’identifiant et l’adresse e-mail ne sont pas déjà utilisés."), http.StatusConflict)
+		writeHTML(w, localizeUsersHTML(a.renderUserCreatePage(session.CSRFToken, modules, permissions, u, "Le compte n’a pas pu être créé. Vérifiez que l’identifiant et l’adresse e-mail ne sont pas déjà utilisés."), a.languageForUser(ctx, current.ID)), http.StatusConflict)
 		return
 	}
 	http.Redirect(w, r, "/users?result=created", http.StatusSeeOther)

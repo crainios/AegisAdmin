@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var AccessLogEvents = []string{"login_success", "login_failure", "two_factor_success", "two_factor_failure", "logout", "password_changed", "two_factor_enabled", "two_factor_disabled"}
+var AccessLogEvents = []string{"login_success", "login_failure", "two_factor_success", "two_factor_failure", "logout", "password_changed", "two_factor_enabled", "two_factor_disabled", "server_reboot_scheduled"}
 var accessLogEventSet = func() map[string]bool {
 	result := map[string]bool{}
 	for _, event := range AccessLogEvents {

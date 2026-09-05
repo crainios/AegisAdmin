@@ -111,6 +111,54 @@ func (b *Backend) upgradeStatus(id string) protocol.Reply {
 	return protocol.Reply{Response: api.Success(map[string]any{"job_id": job.ID, "status": job.Status, "backend": job.Backend, "lines": job.Lines, "exit_code": job.ExitCode, "started_at": job.StartedAt, "finished_at": job.FinishedAt, "version_before": job.VersionBefore, "version_after": job.VersionAfter})}
 }
 
+func (b *Backend) scheduleReboot(delay string) protocol.Reply {
+	b.upgradeMu.Lock()
+	defer b.upgradeMu.Unlock()
+	allowed := map[string]bool{"0": true, "5": true, "15": true, "30": true, "60": true}
+	if !allowed[delay] {
+		return fail(2, "INVALID_REBOOT_DELAY", "Le délai de redémarrage demandé est invalide.")
+	}
+	if b.upgradeInProgress() {
+		return fail(10, "UPDATE_IN_PROGRESS", "Le serveur ne peut pas redémarrer pendant une mise à jour.")
+	}
+	if b.runner == nil || !executable(b.systemctl) {
+		return fail(3, "DEPENDENCY_NOT_FOUND", "systemd est nécessaire pour redémarrer le serveur.")
+	}
+	if delay == "0" {
+		if _, status := b.runner.Run(context.Background(), b.systemctl, "reboot", "--no-block"); status != 0 {
+			return fail(10, "REBOOT_SCHEDULE_FAILED", "Le redémarrage du serveur n’a pas pu être programmé.")
+		}
+		return protocol.Reply{Response: api.Success(map[string]any{"scheduled": true, "delay_minutes": 0})}
+	}
+	if !executable(b.systemdRun) {
+		return fail(3, "DEPENDENCY_NOT_FOUND", "systemd-run est nécessaire pour programmer le redémarrage.")
+	}
+	arguments := []string{"--unit=aegisadmin-reboot", "--collect", "--on-active=" + delay + "m", b.systemctl, "reboot", "--no-block"}
+	if _, status := b.runner.Run(context.Background(), b.systemdRun, arguments...); status != 0 {
+		return fail(10, "REBOOT_SCHEDULE_FAILED", "Le redémarrage du serveur n’a pas pu être programmé.")
+	}
+	return protocol.Reply{Response: api.Success(map[string]any{"scheduled": true, "delay_minutes": delay})}
+}
+
+func (b *Backend) upgradeInProgress() bool {
+	store := upgradeStore{root: b.updateState}
+	current, err := store.current()
+	if err != nil {
+		return false
+	}
+	job, err := store.read(current)
+	if err != nil || (job.Status != "pending" && job.Status != "running") {
+		return false
+	}
+	if b.runner != nil && executable(b.systemctl) {
+		if _, status := b.runner.Run(context.Background(), b.systemctl, "is-active", "--quiet", "aegisadmin-updater@"+job.ID+".service"); status == 0 {
+			return true
+		}
+	}
+	started, err := time.Parse(time.RFC3339, job.StartedAt)
+	return err == nil && time.Since(started) < 30*time.Second
+}
+
 // RunUpdater executes a persisted job from the independent systemd unit.
 func RunUpdater(jobID, stateDirectory string) error {
 	return runUpdater(context.Background(), jobID, upgradeStore{root: stateDirectory}, updaterCommands{aptGet: aptGetCommand, dnf: dnfCommand})

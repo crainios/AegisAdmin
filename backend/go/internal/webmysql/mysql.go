@@ -56,6 +56,12 @@ func (c *Client) MySQLSnapshot(ctx context.Context) (Snapshot, error) {
 		if e := decode(serviceData, &s.Server.Service); e != nil {
 			return s, fmt.Errorf("decode mysql service: %w", e)
 		}
+		if !s.Server.Service.Exists {
+			s.Server.Product = "MySQL / MariaDB"
+			s.Metrics = map[string]int64{}
+			s.Databases = []Database{}
+			return s, nil
+		}
 	}
 	info, e := c.call("info")
 	if e != nil {

@@ -26,6 +26,7 @@ const (
 	dnfCacheDirectory  = "/var/cache/dnf"
 	rebootRequiredFile = "/var/run/reboot-required"
 	systemctlCommand   = "/usr/bin/systemctl"
+	systemdRunCommand  = "/usr/bin/systemd-run"
 	updateStatePath    = "/var/lib/aegisadmin/updates"
 )
 
@@ -34,12 +35,12 @@ type Runner interface {
 }
 
 type Backend struct {
-	runner                         Runner
-	apt, dnf, rpm, fwupd           string
-	aptLists, dnfCache, rebootFile string
-	upgradeMu                      sync.Mutex
-	aptGet, systemctl, updateState string
-	composer                       *composerMonitor
+	runner                                     Runner
+	apt, dnf, rpm, fwupd                       string
+	aptLists, dnfCache, rebootFile             string
+	upgradeMu                                  sync.Mutex
+	aptGet, systemctl, systemdRun, updateState string
+	composer                                   *composerMonitor
 }
 
 type Handler struct{ backend *Backend }
@@ -69,7 +70,7 @@ var aptLine = regexp.MustCompile(`^([^/]+)/([^ ]+)\s+(\S+)\s+(\S+)\s+\[upgradabl
 
 func New(backend *Backend) *Handler { return &Handler{backend} }
 func NewLinuxBackend(ctx context.Context) *Backend {
-	backend := &Backend{runner: execRunner{}, apt: aptCommand, aptGet: aptGetCommand, dnf: dnfCommand, rpm: rpmCommand, fwupd: fwupdCommand, aptLists: aptListsDirectory, dnfCache: dnfCacheDirectory, rebootFile: rebootRequiredFile, systemctl: systemctlCommand, updateState: updateStatePath}
+	backend := &Backend{runner: execRunner{}, apt: aptCommand, aptGet: aptGetCommand, dnf: dnfCommand, rpm: rpmCommand, fwupd: fwupdCommand, aptLists: aptListsDirectory, dnfCache: dnfCacheDirectory, rebootFile: rebootRequiredFile, systemctl: systemctlCommand, systemdRun: systemdRunCommand, updateState: updateStatePath}
 	backend.composer = newComposerMonitor(backend.runner)
 	backend.composer.start(ctx)
 	return backend
@@ -95,7 +96,7 @@ func (h *Handler) Handle(ctx context.Context, command string, args []string) pro
 	if command == "" {
 		return fail(2, "MISSING_COMMAND", "Aucune commande n’a été indiquée pour le domaine updates.")
 	}
-	if command != "info" && command != "list" && command != "firmware" && command != "upgrade-start" && command != "upgrade-status" && command != "composer-status" && command != "composer-refresh" {
+	if command != "info" && command != "list" && command != "firmware" && command != "upgrade-start" && command != "upgrade-status" && command != "composer-status" && command != "composer-refresh" && command != "reboot" {
 		return fail(4, "COMMAND_NOT_FOUND", "La commande demandée n’existe pas dans le domaine updates.")
 	}
 	if command == "upgrade-start" {
@@ -121,6 +122,12 @@ func (h *Handler) Handle(ctx context.Context, command string, args []string) pro
 			return fail(2, "INVALID_ARGUMENT_COUNT", "Le nombre d’arguments fourni est invalide.")
 		}
 		return protocol.Reply{Response: api.Success(h.backend.refreshComposer())}
+	}
+	if command == "reboot" {
+		if len(args) != 1 {
+			return fail(2, "INVALID_ARGUMENT_COUNT", "Le nombre d’arguments fourni est invalide.")
+		}
+		return h.backend.scheduleReboot(args[0])
 	}
 	if len(args) != 0 {
 		return fail(2, "INVALID_ARGUMENT_COUNT", "Le nombre d’arguments fourni est invalide.")

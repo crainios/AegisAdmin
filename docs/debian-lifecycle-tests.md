@@ -22,9 +22,12 @@ Sur une VM Debian sans AegisAdmin :
 ```bash
 sudo apt install ./aegisadmin_VERSION_amd64.deb
 sudo aegisadmin initialize
-sudo systemctl status aegisadmin-system.service aegisadmin-web.service apache2.service --no-pager
-curl --insecure https://127.0.0.1:9080/readyz
+sudo systemctl status aegisadmin-system.service aegisadmin-web.service --no-pager
 ```
+
+Avec Apache, contrôler `apache2.service` et
+`https://127.0.0.1:9080/readyz`. Sans Apache, contrôler directement
+`https://127.0.0.1:8443/readyz`.
 
 Créer ensuite un utilisateur de test, un paramètre et un snapshot, puis noter
 les empreintes de la base et de la paire TLS :
@@ -39,8 +42,9 @@ sudo sha256sum /etc/aegisadmin-system/tls/admin-local.key
 
 ```bash
 sudo apt install --reinstall ./aegisadmin_VERSION_amd64.deb
-curl --insecure https://127.0.0.1:9080/readyz
 ```
+
+Contrôler la sonde sur `9080` avec Apache ou `8443` sans Apache.
 
 Contrôler que le compte, les paramètres et les snapshots sont toujours présents
 et que les empreintes TLS n’ont pas changé. L’empreinte SQLite peut évoluer du
@@ -54,9 +58,10 @@ témoins, puis installer le nouveau paquet :
 
 ```bash
 sudo apt install ./aegisadmin_NOUVELLE_VERSION_amd64.deb
-sudo systemctl status aegisadmin-system.service aegisadmin-web.service apache2.service --no-pager
-curl --insecure https://127.0.0.1:9080/readyz
+sudo systemctl status aegisadmin-system.service aegisadmin-web.service --no-pager
 ```
+
+Utiliser la sonde `9080` avec Apache ou `8443` sans Apache.
 
 Vérifier la version dans l’interface et avec `sudo aegisadmin version`, puis
 contrôler les données témoins, les fichiers de configuration, les snapshots et
@@ -68,11 +73,11 @@ les empreintes TLS.
 sudo apt remove aegisadmin
 sudo test -f /var/lib/aegisadmin/database/aegisadmin.sqlite
 sudo apt install ./aegisadmin_VERSION_amd64.deb
-curl --insecure https://127.0.0.1:9080/readyz
 ```
 
-La suppression arrête les services et désactive le VirtualHost dédié, mais
-conserve volontairement la base, les snapshots, les sauvegardes et la paire TLS.
+La suppression arrête les services et désactive le VirtualHost dédié lorsqu’il
+existe, mais conserve volontairement la base, les snapshots, les sauvegardes et
+la paire TLS.
 
 ## 6. Purge
 

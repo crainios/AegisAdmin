@@ -25,6 +25,8 @@
 <h2>Préférences</h2>
 <form class="selector-form" method="post" action="/setting">
 <input type="hidden" name="_token" value="{{CSRF}}">
+<label for="default-language">Langue par défaut de l’interface et de la page de connexion</label>
+<select id="default-language" name="default_language" required>{{DEFAULT_LANGUAGE}}</select>
 <label>Journal ouvert par défaut</label>
 {{LOG_SOURCES}}
 <label>Adresse e-mail utilisée par défaut pour les certificats</label>

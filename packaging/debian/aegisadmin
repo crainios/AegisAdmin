@@ -3,7 +3,7 @@ set -eu
 
 usage() {
     printf '%s\n' \
-        'Usage : aegisadmin initialize|mysql-setup|migrate|status|version|web-status'
+        'Usage : aegisadmin initialize|setup-status|mysql-setup|migrate|status|version|web-status'
 }
 
 require_root() {
@@ -64,6 +64,20 @@ run_migration() {
 
 initialize_root() {
     require_root
+    current_language="$(sed -n 's/^AEGISADMIN_WEB_DEFAULT_LANGUAGE=//p' /etc/aegisadmin-system/web-server | tail -n 1)"
+    [ "${current_language}" = en ] || current_language=fr
+    printf 'Langue par défaut de l’interface, fr ou en [%s] : ' "${current_language}"
+    read -r selected_language
+    [ -n "${selected_language}" ] || selected_language="${current_language}"
+    case "${selected_language}" in
+        fr|en) ;;
+        *) printf '%s\n' 'Langue invalide : choisissez fr ou en.' >&2; return 2 ;;
+    esac
+    if grep -q '^AEGISADMIN_WEB_DEFAULT_LANGUAGE=' /etc/aegisadmin-system/web-server; then
+        sed -i "s/^AEGISADMIN_WEB_DEFAULT_LANGUAGE=.*/AEGISADMIN_WEB_DEFAULT_LANGUAGE=${selected_language}/" /etc/aegisadmin-system/web-server
+    else
+        printf 'AEGISADMIN_WEB_DEFAULT_LANGUAGE=%s\n' "${selected_language}" >> /etc/aegisadmin-system/web-server
+    fi
     stop_web_for_database_maintenance
     set +e
     /usr/libexec/aegisadmin/aegisadmin-admin initialize-root
@@ -90,6 +104,7 @@ configure_mysql() {
 
 case "${1:-}" in
     initialize) initialize_root ;;
+    setup-status) require_root; exec /usr/libexec/aegisadmin/aegisadmin-admin setup-status ;;
     mysql-setup) configure_mysql ;;
     migrate) run_migration ;;
     status) exec systemctl status aegisadmin-system.service ;;

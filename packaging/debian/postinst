@@ -3,8 +3,6 @@ set -eu
 
 case "${1:-configure}" in
     configure)
-        database_was_present=false
-        [ -s /var/lib/aegisadmin/database/aegisadmin.sqlite ] && database_was_present=true
         for command in getent adduser addgroup install openssl runuser sed apt-get systemctl; do
             if ! command -v "${command}" >/dev/null 2>&1; then
                 printf 'Commande indispensable absente : %s\n' "${command}" >&2
@@ -54,6 +52,9 @@ case "${1:-configure}" in
         fi
 		if ! grep -q '^AEGISADMIN_WEB_ALLOW_FROM=' /etc/aegisadmin-system/web-server; then
 			printf '%s\n' 'AEGISADMIN_WEB_ALLOW_FROM=all' >> /etc/aegisadmin-system/web-server
+		fi
+		if ! grep -q '^AEGISADMIN_WEB_DEFAULT_LANGUAGE=' /etc/aegisadmin-system/web-server; then
+			printf '%s\n' 'AEGISADMIN_WEB_DEFAULT_LANGUAGE=fr' >> /etc/aegisadmin-system/web-server
 		fi
 		if [ "${apache_present}" = false ] && grep -q '^AEGISADMIN_WEB_LISTEN=127\.0\.0\.1:9080$' /etc/aegisadmin-system/web-server; then
 			sed -i 's|^AEGISADMIN_WEB_LISTEN=.*|AEGISADMIN_WEB_LISTEN=:8443|' /etc/aegisadmin-system/web-server
@@ -110,7 +111,12 @@ case "${1:-configure}" in
 			fi
 		fi
 
-        systemctl daemon-reload
+		# Les installations historiques utilisaient cette unité avec le même
+		# socket. Elle doit être arrêtée avant le démarrage du service empaqueté.
+		if systemctl cat aegisadmin-daemon.service >/dev/null 2>&1; then
+			systemctl disable --now aegisadmin-daemon.service >/dev/null 2>&1 || true
+		fi
+		systemctl daemon-reload
         systemctl enable aegisadmin-system.service >/dev/null
         systemctl enable aegisadmin-web.service >/dev/null
         systemctl restart aegisadmin-system.service
@@ -145,8 +151,14 @@ case "${1:-configure}" in
 		fi
 
 		printf '%s\n' 'AegisAdmin Go est installé et les services ont été redémarrés.'
-		if [ "${database_was_present}" = false ]; then
-			printf '%s\n' 'Pour une première installation, initialisez le compte administrateur avec : sudo aegisadmin initialize'
+		setup_status="$(/usr/libexec/aegisadmin/aegisadmin-admin setup-status 2>/dev/null || true)"
+		if printf '%s\n' "${setup_status}" | grep -q 'Initialisation : requise'; then
+			printf '%s\n' \
+				'==================================================' \
+				'INITIALISATION OBLIGATOIRE' \
+				'Créez maintenant le compte administrateur avec :' \
+				'  sudo aegisadmin initialize' \
+				'=================================================='
 		fi
         ;;
 esac

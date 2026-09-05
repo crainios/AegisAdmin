@@ -34,7 +34,7 @@ d’installation.
 Root peut créer un snapshot depuis l’interface. Chaque snapshot contient
 l’inventaire complet, sa date UTC et l’empreinte SHA-256 de l’inventaire. Les
 fichiers sont enregistrés dans
-`/var/lib/aegisadmin-system/configuration/snapshots`, avec un répertoire en
+`/var/lib/aegisadmin/configuration/snapshots`, avec un répertoire en
 mode `0750` et des fichiers en mode `0440`. Le backend refuse les identifiants
 non conformes, les liens symboliques, les fichiers trop volumineux et les
 snapshots dont l’empreinte ne correspond plus au contenu.

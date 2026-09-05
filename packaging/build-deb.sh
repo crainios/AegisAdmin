@@ -92,12 +92,22 @@ install -m 0640 "${DEBIAN_SOURCE}/web-server" "${PACKAGE_ROOT}/etc/aegisadmin-sy
 install -m 0640 "${DEBIAN_SOURCE}/admin-web" "${PACKAGE_ROOT}/usr/share/aegisadmin/defaults/admin-web"
 install -m 0644 "${DEBIAN_SOURCE}/aegisadmin-apache.conf" "${PACKAGE_ROOT}/usr/share/aegisadmin/defaults/aegisadmin-admin.conf"
 install -m 0440 "${DEBIAN_SOURCE}/aegisadmin.sudoers" "${PACKAGE_ROOT}/etc/sudoers.d/aegisadmin"
-install -m 0644 "${PROJECT_ROOT}/docs/architecture/debian-packaging.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/debian-packaging.md"
-install -m 0644 "${PROJECT_ROOT}/docs/operations.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/operations.md"
-install -m 0644 "${PROJECT_ROOT}/docs/admin-https-access.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/admin-https-access.md"
-install -m 0644 "${PROJECT_ROOT}/docs/root-password-recovery.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/root-password-recovery.md"
-install -m 0644 "${PROJECT_ROOT}/docs/debian-lifecycle-tests.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/debian-lifecycle-tests.md"
-install -m 0644 "${PROJECT_ROOT}/docs/apt-repository.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/apt-repository.md"
+install -m 0644 "${PROJECT_ROOT}/docs/en/debian-packaging.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/debian-packaging.md"
+install -m 0644 "${PROJECT_ROOT}/docs/en/operations.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/operations.md"
+install -m 0644 "${PROJECT_ROOT}/docs/en/admin-https-access.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/admin-https-access.md"
+install -m 0644 "${PROJECT_ROOT}/docs/en/modules-and-permissions.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/modules-and-permissions.md"
+install -m 0644 "${PROJECT_ROOT}/docs/en/root-password-recovery.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/root-password-recovery.md"
+install -m 0644 "${PROJECT_ROOT}/docs/en/debian-lifecycle-tests.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/debian-lifecycle-tests.md"
+install -m 0644 "${PROJECT_ROOT}/docs/en/apt-repository.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/apt-repository.md"
+install -m 0644 "${PROJECT_ROOT}/docs/architecture/debian-packaging.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/debian-packaging.fr.md"
+install -m 0644 "${PROJECT_ROOT}/docs/operations.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/operations.fr.md"
+install -m 0644 "${PROJECT_ROOT}/docs/admin-https-access.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/admin-https-access.fr.md"
+install -m 0644 "${PROJECT_ROOT}/docs/modules-and-permissions.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/modules-and-permissions.fr.md"
+install -m 0644 "${PROJECT_ROOT}/docs/root-password-recovery.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/root-password-recovery.fr.md"
+install -m 0644 "${PROJECT_ROOT}/docs/debian-lifecycle-tests.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/debian-lifecycle-tests.fr.md"
+install -m 0644 "${PROJECT_ROOT}/docs/apt-repository.md" "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/apt-repository.fr.md"
+sed -E -i 's#\]\(\.\./([^)]*)\.md\)#](\1.fr.md)#g' \
+    "${PACKAGE_ROOT}/usr/share/doc/aegisadmin/"*.md
 
 for script in postinst prerm postrm; do
     /bin/sh -n "${DEBIAN_SOURCE}/${script}"

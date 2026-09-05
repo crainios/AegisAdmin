@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-type ApplicationSettings struct{ DefaultLog, CertbotEmail string }
+type ApplicationSettings struct{ DefaultLog, CertbotEmail, DefaultLanguage string }
 
 type SMTPSettings struct {
 	Host, Username, Security string
@@ -18,7 +18,7 @@ type SMTPSettings struct {
 }
 
 func (s *Store) Settings(ctx context.Context) (ApplicationSettings, error) {
-	rows, err := s.database.QueryContext(ctx, `SELECT setting_key,setting_value FROM application_settings WHERE setting_key IN ('logs.default_source','certbot.default_email')`)
+	rows, err := s.database.QueryContext(ctx, `SELECT setting_key,setting_value FROM application_settings WHERE setting_key IN ('logs.default_source','certbot.default_email','interface.default_language')`)
 	if err != nil {
 		return ApplicationSettings{}, fmt.Errorf("read settings: %w", err)
 	}
@@ -34,6 +34,8 @@ func (s *Store) Settings(ctx context.Context) (ApplicationSettings, error) {
 			result.DefaultLog = value
 		case "certbot.default_email":
 			result.CertbotEmail = value
+		case "interface.default_language":
+			result.DefaultLanguage = value
 		}
 	}
 	return result, rows.Err()
@@ -114,7 +116,7 @@ func (s *Store) UpdateSettings(ctx context.Context, value ApplicationSettings) e
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339)
-	for key, item := range map[string]string{"logs.default_source": value.DefaultLog, "certbot.default_email": value.CertbotEmail} {
+	for key, item := range map[string]string{"logs.default_source": value.DefaultLog, "certbot.default_email": value.CertbotEmail, "interface.default_language": value.DefaultLanguage} {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO application_settings(setting_key,setting_value,created_at,updated_at) VALUES(?,?,?,?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value,updated_at=excluded.updated_at`, key, item, now, now); err != nil {
 			return fmt.Errorf("update setting: %w", err)
 		}

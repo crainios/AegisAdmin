@@ -23,6 +23,37 @@ import (
 
 var migrationName = regexp.MustCompile(`^[0-9]{3}_[a-z0-9_]+\.sql$`)
 
+func RootInitialized(ctx context.Context, databasePath string) (bool, error) {
+	if !filepath.IsAbs(databasePath) {
+		return false, errors.New("database path must be absolute")
+	}
+	info, err := os.Lstat(databasePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return false, errors.New("database must be a regular non-symlink file")
+	}
+	dsn := (&url.URL{Scheme: "file", Path: databasePath, RawQuery: "mode=ro&_pragma=query_only(1)"}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	var tableCount int
+	if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'`).Scan(&tableCount); err != nil || tableCount == 0 {
+		return false, err
+	}
+	var rootCount int
+	if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE type='root'`).Scan(&rootCount); err != nil {
+		return false, err
+	}
+	return rootCount > 0, nil
+}
+
 func Migrate(ctx context.Context, databasePath, migrationsDirectory string) ([]string, error) {
 	if !filepath.IsAbs(databasePath) || !filepath.IsAbs(migrationsDirectory) {
 		return nil, errors.New("database and migrations paths must be absolute")

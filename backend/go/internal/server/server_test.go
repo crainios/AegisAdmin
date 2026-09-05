@@ -1,12 +1,51 @@
 package server
 
 import (
+	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"aegisadmin/backend/internal/protocol"
 )
+
+func TestPrepareSocketRefusesRunningServer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backend.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			t.Skip("Unix sockets are not permitted in this test sandbox")
+		}
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err = prepareSocket(path); err == nil || !strings.Contains(err.Error(), "running server") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPrepareSocketRemovesStaleSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backend.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			t.Skip("Unix sockets are not permitted in this test sandbox")
+		}
+		t.Fatal(err)
+	}
+	if err = listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = prepareSocket(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale socket still exists: %v", err)
+	}
+}
 
 func TestDecodeRequestUsesNewlineFrameWithoutWaitingForEOF(t *testing.T) {
 	reader, writer := newBlockingReader()

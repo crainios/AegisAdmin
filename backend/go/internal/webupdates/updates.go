@@ -146,7 +146,10 @@ func (c *Client) Summary(ctx context.Context) (Summary, error) {
 	summary.FirmwareUpdateCount = firmware.DeviceCount
 	summary.UpdateCount = summary.APTUpdateCount + summary.FirmwareUpdateCount
 	summary.SecurityUpdateCount = info.SecurityUpdateCount + firmwareSecurity
-	summary.RebootRequired = info.RebootRequired || firmware.RebootRequired
+	// Le drapeau fwupd décrit le redémarrage qui sera nécessaire après
+	// l’installation du firmware ; il ne signifie pas que le système attend
+	// déjà un redémarrage. Seul l’état système courant alimente l’alerte.
+	summary.RebootRequired = info.RebootRequired
 	summary.UpdatesAvailable = summary.UpdateCount > 0
 	summary.URL = "/updates"
 	backend := info.Backend
@@ -255,6 +258,13 @@ func (c *Client) RefreshComposer(ctx context.Context) error {
 		return err
 	}
 	_, err := c.call("composer-refresh", nil)
+	return err
+}
+func (c *Client) Reboot(ctx context.Context, delayMinutes int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := c.call("reboot", []string{fmt.Sprintf("%d", delayMinutes)})
 	return err
 }
 func (c *Client) call(command string, args []string) (map[string]any, error) {

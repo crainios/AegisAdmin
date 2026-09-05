@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -79,7 +80,7 @@ func (b *Backend) info(ctx context.Context) (map[string]any, *protocol.Reply) {
 	if len(plugins) == 0 {
 		return nil, b.readFailure()
 	}
-	data := map[string]any{"product": "Certbot", "version": match[1], "executable": b.paths.Certbot, "installation": installation, "package": pkg, "package_version": packageVersion, "plugins": plugins}
+	data := map[string]any{"installed": true, "product": "Certbot", "version": match[1], "executable": b.paths.Certbot, "installation": installation, "package": pkg, "package_version": packageVersion, "plugins": plugins}
 	b.infoCache = cloneInfo(data)
 	return data, nil
 }
@@ -163,6 +164,9 @@ type Certificate struct {
 
 func (b *Backend) certificates(_ context.Context) (map[string]any, *protocol.Reply) {
 	info, err := os.Stat(b.paths.RenewalDirectory)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]any{"certificates": []Certificate{}, "count": 0}, nil
+	}
 	if err != nil || !info.IsDir() {
 		return nil, b.readFailure()
 	}

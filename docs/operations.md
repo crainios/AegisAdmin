@@ -68,27 +68,26 @@ droit global de lecture des données applicatives ne lui est attribué.
 sudo systemctl status \
     aegisadmin-system.service \
     aegisadmin-web.service \
-    apache2.service \
     --no-pager -l
-
-curl --insecure https://127.0.0.1:9080/readyz
 sudo aegisadmin version
 ```
 
-La sonde doit indiquer `status`, `backend` et `database` à `ok`. Le port 9080
-doit rester limité à l’interface locale lorsqu’Apache publie l’application.
+Avec Apache, utiliser `curl --insecure https://127.0.0.1:9080/readyz` et
+contrôler séparément `apache2.service`. Sans Apache, utiliser
+`curl --insecure https://127.0.0.1:8443/readyz`. La sonde doit indiquer
+`status`, `backend` et `database` à `ok`. Le port 9080 doit rester limité à
+l’interface locale lorsqu’Apache publie l’application.
 
 ## Journaux de diagnostic
 
 ```bash
 sudo journalctl -u aegisadmin-system.service -n 100 --no-pager -l
 sudo journalctl -u aegisadmin-web.service -n 100 --no-pager -l
-sudo journalctl -u apache2.service -n 100 --no-pager -l
-sudo apachectl configtest
 ```
 
 En cas d’interface indisponible, contrôler dans cet ordre le backend, le socket,
-le serveur web, la sonde locale, puis Apache. Le serveur web ne doit jamais être
+le serveur web et la sonde. Si Apache est installé, contrôler ensuite son
+journal et `sudo apachectl configtest`. Le serveur web ne doit jamais être
 exécuté en root.
 
 ## Mise à niveau
@@ -108,6 +107,12 @@ sudo journalctl -u aegisadmin-updater@IDENTIFIANT.service --no-pager -l
 
 Une seule mise à jour peut être exécutée à la fois.
 
+Lorsqu’APT crée `/var/run/reboot-required`, la page Mises à jour propose
+exclusivement à root un redémarrage immédiat ou différé. Le besoin futur d’un
+firmware reste indiqué dans sa ligne, mais ne déclenche pas cette alerte avant
+son installation. Une confirmation explicite est obligatoire et le backend
+refuse la demande tant qu’une mise à jour est active.
+
 La session authentifiée est conservée dans un stockage privé pendant le
 redémarrage du serveur web. La modale peut ainsi reprendre son suivi sans
 imposer une nouvelle connexion. Une session expirée, révoquée par une
@@ -124,7 +129,8 @@ sudo apt install /tmp/aegisadmin_VERSION_amd64.deb
 
 La mise à niveau applique les migrations, conserve la base, les sauvegardes,
 les snapshots, la paire TLS et les configurations locales, puis contrôle que
-les trois services restent actifs.
+les services AegisAdmin restent actifs et, lorsqu’il est installé, qu’Apache
+reste fonctionnel.
 
 ## Sauvegarde et restauration
 
@@ -168,12 +174,14 @@ seconde retire le secret TOTP et invalide également les sessions existantes.
 
 Le paquet crée une paire TLS locale uniquement si les deux fichiers sont
 absents. Si un seul élément subsiste, l’installation s’arrête sans écraser
-l’autre. Les réglages du VirtualHost de secours sont gérés depuis **Paramètres >
-Accès HTTPS dédié**.
+l’autre. Les réglages de l’accès dédié sont gérés depuis **Paramètres > Accès
+HTTPS dédié**. Ils pilotent directement le serveur Go sans Apache et le
+VirtualHost dédié lorsqu’Apache est présent.
 
-Un domaine public doit utiliser un VirtualHost Apache distinct qui transmet les
-requêtes à `https://127.0.0.1:9080`. Le détail se trouve dans
-`admin-https-access.md`.
+Si Apache est utilisé, un domaine public doit employer un VirtualHost distinct
+qui transmet les requêtes à `https://127.0.0.1:9080`. Sans Apache, le serveur Go
+reste utilisable directement sur son port HTTPS dédié. Le détail se trouve
+dans `admin-https-access.md`.
 
 ## Suppression et purge
 
@@ -181,8 +189,9 @@ requêtes à `https://127.0.0.1:9080`. Le détail se trouve dans
 sudo apt remove aegisadmin
 ```
 
-La suppression arrête les services et désactive le site Apache, mais conserve
-la base, les sauvegardes, les snapshots, les configurations et la paire TLS.
+La suppression arrête les services et désactive le site Apache lorsqu’il
+existe, mais conserve la base, les sauvegardes, les snapshots, les
+configurations et la paire TLS.
 Les sessions web sont en revanche supprimées afin qu’une réinstallation ne
 restaure jamais une ancienne authentification.
 

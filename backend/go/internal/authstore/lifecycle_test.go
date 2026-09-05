@@ -18,9 +18,17 @@ func TestLifecycleMigratesAndManagesRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	database := filepath.Join(directory, "aegis admin.sqlite")
+	initialized, err := RootInitialized(context.Background(), database)
+	if err != nil || initialized {
+		t.Fatalf("missing database initialized=%t err=%v", initialized, err)
+	}
 	applied, err := Migrate(context.Background(), database, migrations)
 	if err != nil || len(applied) != 1 {
 		t.Fatalf("migrate=%v err=%v", applied, err)
+	}
+	initialized, err = RootInitialized(context.Background(), database)
+	if err != nil || initialized {
+		t.Fatalf("migrated database initialized=%t err=%v", initialized, err)
 	}
 	store, err := OpenReadWrite(database)
 	if err != nil {
@@ -29,6 +37,10 @@ func TestLifecycleMigratesAndManagesRoot(t *testing.T) {
 	defer store.Close()
 	if err = store.InitializeRoot(context.Background(), "Ada", "Lovelace", "ada@example.test", "correct horse battery"); err != nil {
 		t.Fatal(err)
+	}
+	initialized, err = RootInitialized(context.Background(), database)
+	if err != nil || !initialized {
+		t.Fatalf("initialized database initialized=%t err=%v", initialized, err)
 	}
 	root, found, err := store.FindRoot(context.Background())
 	if err != nil || !found || root.Login != "root" {

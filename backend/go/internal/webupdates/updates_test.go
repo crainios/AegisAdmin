@@ -33,7 +33,7 @@ func TestSummaryCombinesPackageAndFirmwareUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.UpdateCount != 3 || summary.SecurityUpdateCount != 2 || summary.Status != "danger" || summary.Value != "3 mises à jour" || !summary.RebootRequired {
+	if summary.UpdateCount != 3 || summary.SecurityUpdateCount != 2 || summary.Status != "danger" || summary.Value != "3 mises à jour" || summary.RebootRequired {
 		t.Fatalf("unexpected summary: %#v", summary)
 	}
 }

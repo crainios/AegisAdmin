@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -22,5 +24,20 @@ func TestUsageExplainsAdministrativeCommands(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("help does not contain %q:\n%s", expected, text)
 		}
+	}
+}
+
+func TestFirstExistingDirectoryKeepsPackagePriority(t *testing.T) {
+	root := t.TempDir()
+	packaged := filepath.Join(root, "usr-share")
+	historical := filepath.Join(root, "usr-local")
+	if err := os.Mkdir(packaged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(historical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := firstExistingDirectory(packaged, historical); got != packaged {
+		t.Fatalf("migration directory=%q, want %q", got, packaged)
 	}
 }

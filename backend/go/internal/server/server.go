@@ -161,6 +161,11 @@ func prepareSocket(socketPath string) error {
 	if info.Mode()&os.ModeSocket == 0 {
 		return errors.New("refusing to replace a non-socket path")
 	}
+	connection, dialErr := net.DialTimeout("unix", socketPath, 250*time.Millisecond)
+	if dialErr == nil {
+		_ = connection.Close()
+		return errors.New("refusing to replace a Unix socket owned by a running server")
+	}
 
 	if err := os.Remove(socketPath); err != nil {
 		return fmt.Errorf("remove stale Unix socket: %w", err)

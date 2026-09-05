@@ -42,6 +42,7 @@ import (
 func main() {
 	address := flag.String("listen", "127.0.0.1:9080", "HTTP listen address")
 	allowFrom := flag.String("allow-from", "all", "allowed client IP or CIDR")
+	defaultLanguage := flag.String("default-language", "fr", "default interface language (fr or en)")
 	socketPath := flag.String("backend-socket", "/run/aegisadmin-system/backend.sock", "backend Unix socket path")
 	tlsCertificate := flag.String("tls-cert", "", "TLS certificate path")
 	tlsPrivateKey := flag.String("tls-key", "", "TLS private key path")
@@ -56,6 +57,10 @@ func main() {
 	}
 	if (*tlsCertificate == "") != (*tlsPrivateKey == "") {
 		fmt.Fprintln(os.Stderr, "tls-cert et tls-key doivent être indiqués ensemble")
+		os.Exit(2)
+	}
+	if *defaultLanguage != "fr" && *defaultLanguage != "en" {
+		fmt.Fprintln(os.Stderr, "default-language doit être fr ou en")
 		os.Exit(2)
 	}
 
@@ -99,8 +104,9 @@ func main() {
 		logger.Fatalf("configuration des sessions invalide : %v", err)
 	}
 	handler := webapp.Handler(webapp.Dependencies{
-		Readiness: webapp.ReadinessChecks{Backend: readiness, Database: databaseReadiness},
-		Sessions:  sessions, Authenticator: webauth.New(store), Users: store, AccessLog: store,
+		DefaultLanguage: *defaultLanguage,
+		Readiness:       webapp.ReadinessChecks{Backend: readiness, Database: databaseReadiness},
+		Sessions:        sessions, Authenticator: webauth.New(store), Users: store, AccessLog: store,
 		LoginLimiter: webauth.NewLoginLimiter(),
 		TwoFactor:    webauth.NewTOTPVerifier(), TwoFactorLimiter: webauth.NewLoginLimiter(),
 		Enrollment: store,

@@ -56,10 +56,13 @@ required_files=(
     lib/systemd/system/aegisadmin-updater@.service
     etc/sudoers.d/aegisadmin
     usr/share/aegisadmin/VERSION
+    usr/share/aegisadmin/migrations/012_create_user_preferences.sql
+    usr/share/aegisadmin/migrations/013_add_user_language.sql
     usr/share/aegisadmin/defaults/admin-web
     usr/share/aegisadmin/defaults/aegisadmin-admin.conf
     usr/share/doc/aegisadmin/operations.md
     usr/share/doc/aegisadmin/admin-https-access.md
+    usr/share/doc/aegisadmin/modules-and-permissions.md
     usr/share/doc/aegisadmin/root-password-recovery.md
     usr/share/doc/aegisadmin/debian-lifecycle-tests.md
     usr/share/doc/aegisadmin/apt-repository.md
@@ -77,11 +80,19 @@ done
     || fail "Les droits de l’exécuteur de sauvegarde ne sont pas 0750."
 grep -q 'mysql-setup' "${ROOT}/usr/bin/aegisadmin" \
     || fail "La commande de configuration MySQL est absente du lanceur principal."
+grep -q 'setup-status' "${ROOT}/usr/bin/aegisadmin" && \
+grep -q 'INITIALISATION OBLIGATOIRE' "${CONTROL}/postinst" \
+    || fail "Le contrôle d’initialisation du compte root est absent du paquet."
 grep -q 'configure-mysql-auto' "${CONTROL}/postinst" \
     || fail "L’installation ne tente pas de préparer le compte MySQL de supervision."
+grep -q 'disable --now aegisadmin-daemon.service' "${CONTROL}/postinst" \
+    || fail "La mise à niveau n’arrête pas l’ancien backend utilisant le même socket."
 grep -q '^ExecStart=/usr/libexec/aegisadmin/aegisadmin-updater --job %i ' \
     "${ROOT}/lib/systemd/system/aegisadmin-updater@.service" \
     || fail "L’unité systemd ne lance pas l’exécuteur de mises à jour attendu."
+grep -q '^ProtectKernelModules=false$' \
+    "${ROOT}/lib/systemd/system/aegisadmin-updater@.service" \
+    || fail "L’unité de mise à jour empêche l’installation des paquets du noyau."
 grep -q -- '--sessions /var/lib/aegisadmin/sessions/sessions.json' \
     "${ROOT}/lib/systemd/system/aegisadmin-web.service" \
     || fail "L’unité web ne configure pas le stockage persistant des sessions."
@@ -91,6 +102,11 @@ grep -q -- '--secret-key /var/lib/aegisadmin/secrets/settings.key' \
 grep -q -- '--allow-from ${AEGISADMIN_WEB_ALLOW_FROM}' \
     "${ROOT}/lib/systemd/system/aegisadmin-web.service" \
     || fail "L’unité web ne transmet pas la restriction réseau au serveur Go."
+grep -q -- '--default-language ${AEGISADMIN_WEB_DEFAULT_LANGUAGE}' \
+    "${ROOT}/lib/systemd/system/aegisadmin-web.service" \
+    || fail "L’unité web ne transmet pas la langue par défaut au serveur Go."
+grep -q "AEGISADMIN_WEB_DEFAULT_LANGUAGE=fr" "${CONTROL}/postinst" \
+    || fail "La mise à niveau ne complète pas la langue web par défaut."
 grep -q '^StartLimitIntervalSec=60s$' "${ROOT}/lib/systemd/system/aegisadmin-web.service" && \
 grep -q '^StartLimitBurst=5$' "${ROOT}/lib/systemd/system/aegisadmin-web.service" \
     || fail "L’unité web ne limite pas les boucles de redémarrage."

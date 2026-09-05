@@ -31,6 +31,27 @@ func TestSnapshotReportsDetectedServiceWhenDatabaseLoginFails(t *testing.T) {
 	}
 }
 
+func TestSnapshotReportsMissingServerWithoutQueryingIt(t *testing.T) {
+	backend := &missingBackend{}
+	snapshot, err := New(backend).MySQLSnapshot(context.Background())
+	if err != nil || snapshot.Server.Service.Exists || snapshot.Server.Product != "MySQL / MariaDB" || len(snapshot.Databases) != 0 {
+		t.Fatalf("unexpected missing server snapshot: %#v, %v", snapshot, err)
+	}
+	if backend.calls != 1 {
+		t.Fatalf("backend calls=%d", backend.calls)
+	}
+}
+
+type missingBackend struct{ calls int }
+
+func (b *missingBackend) Execute(request protocol.Request) (protocol.Reply, error) {
+	b.calls++
+	if request.Command != "service" {
+		return protocol.Reply{}, context.Canceled
+	}
+	return protocol.Reply{Response: api.Success(map[string]any{"exists": false, "active": false, "enabled": false, "state": "not-found"})}, nil
+}
+
 type loginDeniedBackend struct{}
 
 func (loginDeniedBackend) Execute(request protocol.Request) (protocol.Reply, error) {

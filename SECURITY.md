@@ -1,42 +1,39 @@
-# Politique de sécurité
+# Security policy
 
-## Versions concernées
+[Version française](SECURITY.fr.md)
 
-La série 0.2.x est une version candidate. Les corrections de sécurité sont
-appliquées à la dernière version publiée dans le dépôt APT officiel. Les
-versions antérieures peuvent ne plus recevoir de correction séparée.
+## Supported versions
 
-## Signaler une vulnérabilité
+The 0.2.x series is a release candidate. Security fixes are applied to the
+latest version published in the official APT repository. Older candidates may
+not receive separate fixes.
 
-N'ouvrez pas d'issue publique pour une vulnérabilité réelle ou suspectée.
-Utilisez la fonction **Report a vulnerability** de l'onglet Security du dépôt
-GitHub. Ce canal crée un avis de sécurité privé visible uniquement par les
-responsables du projet.
+## Report a vulnerability
 
-Indiquez si possible :
+Do not open a public issue for a real or suspected vulnerability. Use
+**Report a vulnerability** in the GitHub repository Security tab. This creates
+a private security advisory visible only to the project maintainers.
 
-- la version d'AegisAdmin et le système utilisé ;
-- le composant et le niveau de permission concernés ;
-- les conditions nécessaires à la reproduction ;
-- l'impact estimé ;
-- une procédure de reproduction minimale ;
-- toute mesure de réduction du risque déjà identifiée.
+Include, when possible:
 
-Ne transmettez jamais de mot de passe, clé privée, secret TOTP, cookie de
-session, sauvegarde de base réelle ou journal contenant des données
-personnelles. Remplacez les valeurs sensibles par des exemples fictifs.
+- the AegisAdmin version and operating system;
+- the affected component and permission level;
+- the conditions required to reproduce the issue;
+- the estimated impact;
+- a minimal reproduction procedure;
+- any known mitigation.
 
-Un accusé de réception sera fourni dès que possible. Les détails ne doivent pas
-être rendus publics avant la disponibilité d'une correction ou l'accord
-explicite des responsables du projet.
+Never send passwords, private keys, TOTP secrets, session cookies, real
+database backups or logs containing personal data. Replace sensitive values
+with fictional examples. Do not disclose details publicly before a fix is
+available or the maintainers explicitly agree.
 
-## Installation prudente
+## Safe evaluation
 
-AegisAdmin administre des composants sensibles du système. La version candidate
-doit d'abord être évaluée sur une machine virtuelle ou un serveur de test,
-avec une sauvegarde restaurable et un accès SSH indépendant.
+AegisAdmin administers sensitive system components. Evaluate the release
+candidate first on a virtual machine or test server with a restorable backup
+and independent SSH access.
 
-Les paquets doivent provenir de `https://packages.aegisadmin.fr` et être
-vérifiés avec la clé du dépôt officiel. N'utilisez jamais `trusted=yes`,
-`apt-key` ou une option ignorant une erreur de signature.
-
+Packages must come from `https://packages.aegisadmin.fr` and be verified using
+the official repository key. Never use `trusted=yes`, `apt-key` or an option
+that ignores signature failures.

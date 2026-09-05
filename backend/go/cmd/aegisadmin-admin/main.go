@@ -54,13 +54,28 @@ func run() error {
 		printUsage(os.Stdout, *database, *migrations)
 		return nil
 	}
-	validCommands := map[string]bool{"migrate": true, "initialize-root": true, "reset-root-password": true, "disable-root-two-factor": true, "configure-mysql": true, "configure-mysql-auto": true}
+	validCommands := map[string]bool{"migrate": true, "initialize-root": true, "setup-status": true, "reset-root-password": true, "disable-root-two-factor": true, "configure-mysql": true, "configure-mysql-auto": true}
 	if !validCommands[command] {
 		flags.Usage()
 		return fmt.Errorf("commande inconnue : %s", command)
 	}
 	if command == "configure-mysql" || command == "configure-mysql-auto" {
 		return configureMySQL(command == "configure-mysql-auto")
+	}
+	if command == "setup-status" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		initialized, err := authstore.RootInitialized(ctx, *database)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if initialized {
+			fmt.Println("Initialisation : terminée")
+		} else {
+			fmt.Println("Initialisation : requise")
+			fmt.Println("Commande : sudo aegisadmin initialize")
+		}
+		return nil
 	}
 	migrationContext, cancelMigration := context.WithTimeout(context.Background(), 30*time.Second)
 	applied, err := authstore.Migrate(migrationContext, *database, *migrations)
@@ -143,6 +158,7 @@ Utilisation :
 Commandes :
   migrate                    Appliquer les migrations SQLite en attente.
   initialize-root            Initialiser le compte root d’une nouvelle installation.
+  setup-status               Vérifier si le compte root a été initialisé.
   reset-root-password        Définir un nouveau mot de passe root et fermer ses sessions.
 	  disable-root-two-factor    Désactiver la 2FA root et fermer ses sessions.
 	  configure-mysql            Créer et configurer le compte MySQL de supervision.
@@ -219,11 +235,25 @@ func readValueDefault(reader *bufio.Reader, prompt, fallback string) (string, er
 }
 
 func defaultMigrationsDirectory() string {
-	const local = "/usr/local/share/aegisadmin/migrations"
-	if info, err := os.Stat(local); err == nil && info.IsDir() {
-		return local
+	// The Debian package is authoritative when it is installed. Historical
+	// source installations may have left an older migration set under
+	// /usr/local; preferring it would silently hide newer packaged migrations.
+	return firstExistingDirectory(
+		"/usr/share/aegisadmin/migrations",
+		"/usr/local/share/aegisadmin/migrations",
+	)
+}
+
+func firstExistingDirectory(directories ...string) string {
+	for _, directory := range directories {
+		if info, err := os.Stat(directory); err == nil && info.IsDir() {
+			return directory
+		}
 	}
-	return "/usr/share/aegisadmin/migrations"
+	if len(directories) > 0 {
+		return directories[0]
+	}
+	return ""
 }
 
 func readValue(reader *bufio.Reader, prompt string) (string, error) {

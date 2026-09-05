@@ -55,3 +55,23 @@ func TestSMTPSettingsEncryptAndPreservePassword(t *testing.T) {
 		t.Fatalf("cleared password = %q, %v", clear, err)
 	}
 }
+
+func TestApplicationSettingsPersistDefaultLanguage(t *testing.T) {
+	database, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`CREATE TABLE application_settings(setting_key TEXT PRIMARY KEY,setting_value TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{database: database}
+	wanted := ApplicationSettings{DefaultLog: "system", CertbotEmail: "admin@example.test", DefaultLanguage: "en"}
+	if err = store.UpdateSettings(context.Background(), wanted); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Settings(context.Background())
+	if err != nil || got != wanted {
+		t.Fatalf("Settings() = %#v, %v", got, err)
+	}
+}

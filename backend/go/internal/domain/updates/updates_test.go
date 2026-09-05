@@ -208,6 +208,55 @@ func TestUpgradeStatusRejectsInvalidJobID(t *testing.T) {
 	}
 }
 
+func TestRebootNowAndDelayed(t *testing.T) {
+	directory := t.TempDir()
+	systemctl := filepath.Join(directory, "systemctl")
+	systemdRun := filepath.Join(directory, "systemd-run")
+	for _, command := range []string{systemctl, systemdRun} {
+		if err := os.WriteFile(command, []byte("fixture"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := fakeRunner{
+		systemctl + " reboot --no-block": {"", 0},
+		systemdRun + " --unit=aegisadmin-reboot --collect --on-active=15m " + systemctl + " reboot --no-block": {"", 0},
+	}
+	handler := New(&Backend{runner: runner, systemctl: systemctl, systemdRun: systemdRun, updateState: directory})
+	for _, delay := range []string{"0", "15"} {
+		reply := handler.Handle(context.Background(), "reboot", []string{delay})
+		if !reply.Response.Success || (*reply.Response.Data)["scheduled"] != true {
+			t.Fatalf("delay %s: %#v", delay, reply)
+		}
+	}
+	invalid := handler.Handle(context.Background(), "reboot", []string{"10"})
+	if invalid.Response.Error == nil || invalid.Response.Error.Code != "INVALID_REBOOT_DELAY" {
+		t.Fatalf("invalid delay: %#v", invalid)
+	}
+}
+
+func TestRebootIsRefusedDuringUpgrade(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "updates")
+	if err := os.Mkdir(directory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(directory, "jobs"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	id := "0123456789abcdef0123456789abcdef"
+	store := upgradeStore{root: directory}
+	if err := store.create(upgradeJob{ID: id, Status: "running", StartedAt: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+	systemctl := filepath.Join(directory, "systemctl")
+	if err := os.WriteFile(systemctl, []byte("fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reply := New(&Backend{runner: fakeRunner{}, systemctl: systemctl, updateState: directory}).Handle(context.Background(), "reboot", []string{"0"})
+	if reply.Response.Error == nil || reply.Response.Error.Code != "UPDATE_IN_PROGRESS" {
+		t.Fatalf("reply=%#v", reply)
+	}
+}
+
 func TestUpdaterStopsWhenMetadataRefreshFails(t *testing.T) {
 	directory := t.TempDir()
 	state := filepath.Join(directory, "updates")

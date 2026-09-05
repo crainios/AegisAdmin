@@ -1,11 +1,75 @@
 <!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>À propos d’AegisAdmin</title><link rel="stylesheet" href="/assets/app.css?v={{VERSION}}"></head>
-<body class="dashboard-body"><main class="dashboard-shell">
-<header class="dashboard-header"><div><p class="eyebrow">AegisAdmin</p><h1>À propos d’AegisAdmin</h1><p class="muted">Origine, méthode de développement et licence du projet</p></div><div class="header-actions"><a class="secondary-link" href="/go/dashboard">Tableau de bord</a><form method="post" action="/logout"><input type="hidden" name="_token" value="{{CSRF}}"><button class="secondary-button" type="submit">Se déconnecter</button></form></div></header>
-<section class="about-grid"><article class="content-card"><h2>Le projet</h2><span class="status-badge status-badge--success">Projet open source</span><dl class="detail-list"><div><dt>Application</dt><dd>AegisAdmin</dd></div><div><dt>Version</dt><dd>{{VERSION}}</dd></div><div><dt>Initiateur du projet</dt><dd>François Milhiet</dd></div></dl></article>
-<article class="content-card"><h2>Licence</h2><span class="status-badge">GNU AGPL-3.0</span><p>AegisAdmin est un logiciel open source distribué sous licence copyleft GNU Affero General Public License v3.0.</p><p>Les versions modifiées et les services qui les rendent accessibles par un réseau doivent proposer leur code source sous la même licence.</p></article></section>
-<article class="content-card"><h2>Une construction assistée par intelligence artificielle</h2><p>AegisAdmin est un projet initié, dirigé et validé par François Milhiet.</p><p>Sa conception et son développement ont été réalisés en collaboration avec ChatGPT d’OpenAI, au fil d’analyses, d’itérations et de validations.</p><p>Les orientations fonctionnelles, les choix d’architecture, les arbitrages et les essais sur serveur restent conduits par l’initiateur du projet.</p></article>
-<article class="content-card"><h2>Rôles et responsabilités</h2><div class="table-scroll"><table class="data-table"><thead><tr><th>Intervenant</th><th>Contribution</th></tr></thead><tbody><tr><th>François Milhiet</th><td>Initiative, direction fonctionnelle, architecture, arbitrages, essais et validation finale.</td></tr><tr><th>ChatGPT d’OpenAI</th><td>Assistance à la conception, à la programmation, à la documentation, à l’analyse et aux contrôles.</td></tr></tbody></table></div></article>
-<article class="content-card"><h2>Liens</h2><ul><li><a href="https://github.com/crainios/AegisAdmin" target="_blank" rel="noopener noreferrer">Dépôt GitHub d’AegisAdmin</a></li><li><a href="https://openai.com/" target="_blank" rel="noopener noreferrer">OpenAI</a></li><li><a href="https://www.gnu.org/licenses/agpl-3.0.fr.html" target="_blank" rel="noopener noreferrer">Licence GNU AGPL v3.0</a></li><li><a href="https://aegisadmin.fr/" target="_blank" rel="noopener noreferrer">Site d’AegisAdmin</a></li></ul></article>
-</main></body></html>
+<html lang="{{LANG}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{T:about.title}}</title>
+  <link rel="stylesheet" href="/assets/app.css?v={{VERSION}}">
+</head>
+<body class="dashboard-body">
+  <main class="dashboard-shell">
+    <header class="dashboard-header">
+      <div>
+        <p class="eyebrow">AegisAdmin</p>
+        <h1>{{T:about.title}}</h1>
+        <p class="muted">{{T:about.subtitle}}</p>
+      </div>
+      <div class="header-actions">
+        <a class="secondary-link" href="/go/dashboard">{{T:common.dashboard}}</a>
+        <form method="post" action="/logout">
+          <input type="hidden" name="_token" value="{{CSRF}}">
+          <button class="secondary-button" type="submit">{{T:common.logout}}</button>
+        </form>
+      </div>
+    </header>
+
+    <section class="about-grid">
+      <article class="content-card">
+        <h2>{{T:about.project}}</h2>
+        <span class="status-badge status-badge--success">{{T:about.open_source}}</span>
+        <dl class="detail-list">
+          <div><dt>{{T:about.application}}</dt><dd>AegisAdmin</dd></div>
+          <div><dt>{{T:common.version}}</dt><dd>{{VERSION}}</dd></div>
+          <div><dt>{{T:about.initiator}}</dt><dd>François Milhiet</dd></div>
+        </dl>
+      </article>
+      <article class="content-card">
+        <h2>{{T:about.license}}</h2>
+        <span class="status-badge">GNU AGPL-3.0</span>
+        <p>{{T:about.license_description}}</p>
+        <p>{{T:about.license_requirement}}</p>
+      </article>
+    </section>
+
+    <article class="content-card">
+      <h2>{{T:about.ai_title}}</h2>
+      <p>{{T:about.ai_initiative}}</p>
+      <p>{{T:about.ai_collaboration}}</p>
+      <p>{{T:about.ai_responsibility}}</p>
+    </article>
+
+    <article class="content-card">
+      <h2>{{T:about.roles}}</h2>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>{{T:about.contributor}}</th><th>{{T:about.contribution}}</th></tr></thead>
+          <tbody>
+            <tr><th>François Milhiet</th><td>{{T:about.francois_role}}</td></tr>
+            <tr><th>ChatGPT d’OpenAI</th><td>{{T:about.chatgpt_role}}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="content-card">
+      <h2>{{T:about.links}}</h2>
+      <ul>
+        <li><a href="https://github.com/crainios/AegisAdmin" target="_blank" rel="noopener noreferrer">{{T:about.github}}</a></li>
+        <li><a href="https://openai.com/" target="_blank" rel="noopener noreferrer">OpenAI</a></li>
+        <li><a href="{{AGPL_URL}}" target="_blank" rel="noopener noreferrer">{{T:about.agpl}}</a></li>
+        <li><a href="https://aegisadmin.fr/" target="_blank" rel="noopener noreferrer">{{T:about.website}}</a></li>
+      </ul>
+    </article>
+  </main>
+</body>
+</html>

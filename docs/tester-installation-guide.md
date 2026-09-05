@@ -25,8 +25,10 @@ correspond pas à celle publiée ci-dessous.
 ## 2. Configuration attendue
 
 La livraison actuellement publiée est un paquet Debian `amd64`. La machine
-doit utiliser un système dérivé de Debian ou Ubuntu avec systemd, APT et Apache.
-Elle doit pouvoir joindre `https://packages.aegisadmin.fr`.
+doit utiliser un système dérivé de Debian ou Ubuntu avec systemd et APT. Apache
+est facultatif et n’est jamais installé automatiquement par AegisAdmin. La
+machine doit pouvoir joindre `https://packages.aegisadmin.fr` pendant
+l’installation et les mises à jour.
 
 Contrôler l’architecture et le système d’initialisation :
 
@@ -191,7 +193,8 @@ Le paquet installe notamment :
 - le serveur web Go non privilégié ;
 - le backend système Go privilégié ;
 - les services systemd correspondants ;
-- un VirtualHost Apache HTTPS de secours sur le port `8443` ;
+- une écoute HTTPS Go directe sur le port `8443` lorsqu’Apache est absent, ou
+  un proxy inverse Apache vers `127.0.0.1:9080` lorsqu’il est présent ;
 - une paire TLS locale et une base SQLite ;
 - les migrations et outils d’administration.
 
@@ -208,9 +211,12 @@ neuve :
 sudo aegisadmin initialize
 ```
 
-L’outil demande le prénom, le nom, l’adresse e-mail, puis le mot de passe et sa
-confirmation. Le mot de passe comporte entre 12 et 72 caractères et apparaît
-sous forme de caractères `#` pendant la frappe.
+L’outil demande la langue par défaut (`fr` ou `en`), le prénom, le nom,
+l’adresse e-mail, puis le mot de passe et sa confirmation. Cette langue pilote
+l’écran de connexion et sert de valeur initiale aux comptes sans préférence.
+Chaque utilisateur peut ensuite choisir sa propre langue dans **Mon compte**.
+Le mot de passe comporte entre 12 et 72 caractères et apparaît sous forme de
+caractères `#` pendant la frappe.
 
 L’identifiant de connexion reste toujours :
 
@@ -237,28 +243,41 @@ enregistré par AegisAdmin.
 sudo systemctl status \
     aegisadmin-system.service \
     aegisadmin-web.service \
-    apache2.service \
     --no-pager -l
 
 sudo aegisadmin version
+```
 
+Avec Apache :
+
+```bash
+sudo systemctl status apache2.service --no-pager -l
 wget --no-check-certificate --quiet --output-document=- \
     https://127.0.0.1:9080/readyz
 ```
 
-Les trois services doivent être actifs. La sonde doit renvoyer une réponse de
+Sans Apache :
+
+```bash
+wget --no-check-certificate --quiet --output-document=- \
+    https://127.0.0.1:8443/readyz
+```
+
+Les deux services AegisAdmin doivent être actifs. Apache doit l’être uniquement
+s’il est installé. La sonde doit renvoyer une réponse de
 la forme :
 
 ```json
 {"status":"ok","version":"VERSION","backend":"ok","database":"ok"}
 ```
 
-Le port `9080` est l’écoute locale du serveur Go. Il n’est pas destiné à être
-ouvert directement sur Internet.
+Avec Apache, le port `9080` est l’écoute locale du serveur Go et ne doit pas
+être ouvert sur Internet. Sans Apache, le serveur Go écoute directement sur le
+port dédié `8443`.
 
 ## 9. Ouvrir l’interface pour la première fois
 
-Le paquet fournit un accès Apache de secours :
+Le paquet fournit un accès HTTPS dédié :
 
 ```text
 https://ADRESSE_IP_DU_SERVEUR:8443/
@@ -274,7 +293,9 @@ Le pare-feu n’est pas modifié automatiquement. Si le port est filtré, autori
 uniquement l’adresse ou le réseau de test selon l’outil de pare-feu déjà utilisé
 sur la machine. Éviter une ouverture mondiale sans nécessité.
 
-Le certificat initial est local et non signé par une autorité publique. Le
+Sans Apache, cet accès est servi directement par Go. Avec Apache, il est publié
+par le VirtualHost dédié installé par le paquet. Le certificat initial est
+local et non signé par une autorité publique. Le
 navigateur affiche donc normalement un avertissement. Avant de l’accepter,
 afficher son empreinte directement sur le serveur :
 
@@ -295,7 +316,7 @@ Commencer par des opérations de consultation :
 2. ouvrir Processus, Stockage, Services, Réseau et Journaux ;
 3. contrôler les listes Apache, Fail2ban, Pare-feu, Cron et Certificats TLS ;
 4. vérifier Mises à jour, Utilisateurs, Modules, Paramètres et Config. serveur ;
-5. tester les trois thèmes et une largeur d’écran réduite ;
+5. tester les quatre thèmes, le français, l’anglais et une largeur d’écran réduite ;
 6. créer une sauvegarde depuis **Paramètres > Sauvegarde de la base**.
 
 Ne tester les actions de modification qu’après avoir créé une sauvegarde ou un
@@ -322,9 +343,14 @@ Si l’interface ne répond pas :
 ```bash
 sudo journalctl -u aegisadmin-system.service -n 100 --no-pager -l
 sudo journalctl -u aegisadmin-web.service -n 100 --no-pager -l
+sudo ss -ltnp | grep -E ':8443|:9080'
+```
+
+Si Apache est installé :
+
+```bash
 sudo journalctl -u apache2.service -n 100 --no-pager -l
 sudo apache2ctl configtest
-sudo ss -ltnp | grep -E ':8443|:9080'
 ```
 
 Contrôler dans cet ordre :
@@ -332,8 +358,8 @@ Contrôler dans cet ordre :
 1. `aegisadmin-system.service` ;
 2. le socket `/run/aegisadmin-system/backend.sock` ;
 3. `aegisadmin-web.service` ;
-4. la sonde locale sur `9080` ;
-5. Apache et l’accès sur `8443` ;
+4. la sonde locale adaptée au mode d’installation ;
+5. selon le mode, l’écoute Go directe sur `8443` ou Apache devant `9080` ;
 6. le pare-feu et le routage réseau.
 
 Ne jamais démarrer manuellement le serveur web en root.

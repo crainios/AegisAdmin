@@ -1,6 +1,6 @@
 # État du projet AegisAdmin
 
-Dernière mise à jour : 2 septembre 2026 — version 0.2.52.
+Dernière mise à jour : 5 septembre 2026 — version 0.2.84.
 
 ## Statut
 
@@ -16,12 +16,69 @@ recommandés.
 ## Architecture
 
 AegisAdmin utilise un serveur web Go non privilégié et un backend système Go
-privilégié. Ils communiquent par un socket Unix privé. Apache fournit l'accès
-HTTPS et peut publier l'interface derrière un nom de domaine.
+privilégié. Ils communiquent par un socket Unix privé. Le serveur web Go peut
+fournir directement l’accès HTTPS ; lorsqu’Apache est présent, il peut publier
+l’interface comme proxy inverse derrière un port dédié ou un nom de domaine.
 
 Les migrations SQLite et la gestion de secours du compte root sont assurées
 par `aegisadmin-admin`. Des exécuteurs spécialisés et validés prennent en charge
 les opérations Cron et Certbot.
+
+Les préférences d’interface liées au compte, notamment le thème, sont conservées
+dans SQLite. Le cookie de thème sert au rendu immédiat et est restauré depuis le
+profil lors de chaque connexion réussie.
+
+La version 0.2.66 corrige la transmission du jeton de sécurité lors d’un
+changement de thème depuis l’en-tête de l’interface Go.
+
+La version 0.2.67 poursuit la supervision bilingue avec les écrans « Services »
+et « Réseau », y compris leurs états calculés et leurs actions autorisées.
+
+La version 0.2.68 traduit l’écran « Journaux » et ses filtres. Les lignes des
+journaux restent brutes : AegisAdmin ne modifie ni les messages ni les dates
+produites par les services supervisés.
+
+La version 0.2.69 ajoute l’écran PHP à la couverture bilingue, tout en
+préservant les identifiants et états techniques nécessaires au diagnostic.
+
+La version 0.2.70 traduit l’écran MySQL/MariaDB et localise également les
+séparateurs de milliers ainsi que les unités de taille de son inventaire.
+
+La version 0.2.71 étend la traduction à Tor, y compris lorsque le logiciel est
+absent et que le module doit rester consultable sans signaler une panne.
+
+La version 0.2.72 traduit le message de validation Tor produit par le backend
+et ajoute la vue principale Apache à la couverture bilingue.
+
+La version 0.2.73 achève la traduction de l’interface Apache avec ses fenêtres
+de création, modification et certificat ainsi que leurs interactions JavaScript.
+
+La version 0.2.74 traduit les valeurs internes et actualisées du tableau de
+bord ainsi que la page principale de gestion des tâches Cron.
+
+La version 0.2.61 introduit le socle bilingue français/anglais. La langue par
+défaut choisie pendant l’initialisation pilote la connexion ; après
+authentification, la préférence enregistrée dans le profil devient prioritaire.
+La connexion, la structure générale, la navigation et le tableau de bord sont
+les premiers écrans migrés. Les modules fonctionnels seront traduits par étapes.
+
+Depuis la version 0.2.62, root retrouve la langue globale dans « Paramètres » et
+chaque utilisateur choisit sa langue personnelle dans « Mon compte ». Aucun
+sélecteur de langue n’encombre l’en-tête général.
+
+La version 0.2.63 corrige la coexistence avec une ancienne installation depuis
+les sources : les migrations livrées par le paquet sous `/usr/share` sont
+prioritaires sur un éventuel répertoire historique sous `/usr/local`.
+
+La version 0.2.64 étend la traduction au parcours complet d’authentification et
+au compte personnel : mot de passe obligatoire ou volontaire, défi et
+activation de la double authentification, QR code et messages de validation.
+
+La version 0.2.65 commence la supervision bilingue avec « Processus » et
+« Stockage ». Elle centralise aussi le format des dates : français en
+`JJ/MM/AAAA HH:mm`, anglais américain en `MM/JJ/AAAA hh:mm AM/PM`. Le journal
+des accès et l’horloge de l’en-tête utilisent déjà cette convention ; les
+écrans suivants l’emploieront au fil de leur migration.
 
 ## Fonctions disponibles
 
@@ -50,7 +107,9 @@ Le paquet Debian est publié pour `amd64` dans le dépôt APT signé officiel :
 
 Le guide public de vérification et d'installation est disponible sur
 `https://aegisadmin.fr/`. Le paquet installe et contrôle les services systemd,
-Apache, la paire TLS locale, les migrations et les droits de la base SQLite.
+la paire TLS locale, les migrations et les droits de la base SQLite. Apache
+n’est ni requis ni installé implicitement ; il n’est configuré que s’il est
+déjà présent.
 
 Le cycle installation, réinstallation, mise à niveau, suppression et purge a
 été validé sur le serveur de test.
@@ -167,3 +226,37 @@ La version 0.2.52 protège les maintenances SQLite réalisées depuis le termina
 le service web est arrêté avant l’écriture et les droits de tous les fichiers
 SQLite sont ensuite normalisés. Une limite systemd met également fin aux
 boucles de démarrage après cinq échecs en une minute.
+
+La version 0.2.53 contrôle explicitement la présence du compte root après
+l’installation, signale l’initialisation obligatoire dans le terminal et sur
+l’écran de connexion, et fournit la commande `aegisadmin setup-status`.
+L’absence de Certbot ou de MySQL/MariaDB est désormais présentée comme un état
+normal dans les modules concernés, sans masquer les véritables erreurs d’un
+logiciel installé.
+
+La version 0.2.54 désactive automatiquement l’ancien service backend lors
+d’une mise à niveau. Elle empêche aussi deux processus de remplacer et
+d’écouter successivement le même socket Unix, situation qui pouvait renvoyer
+aléatoirement des réponses provenant d’une ancienne version.
+
+La version 0.2.55 considère comme valide une installation Certbot sans aucun
+certificat : l’absence initiale du répertoire `renewal` produit une liste vide,
+alors que les erreurs de permissions et les données altérées restent bloquantes.
+
+La version 0.2.56 permet à l’unité indépendante de mise à jour d’écrire dans
+`/usr/lib/modules` pendant l’installation d’un noyau Linux. Cette exception ne
+s’applique ni au serveur web ni au backend permanent.
+
+La version 0.2.57 permet exclusivement à root de confirmer un redémarrage
+immédiat ou différé lorsqu’une mise à jour installée le demande. Le backend refuse
+l’opération pendant une mise à jour active et le résultat de la demande est
+conservé dans le journal des accès.
+
+La version 0.2.58 distingue le besoin courant de redémarrer du besoin futur
+annoncé par une mise à jour de firmware. Seul `/var/run/reboot-required`
+déclenche désormais l’alerte et les actions root.
+
+La version 0.2.59 remplace l’affichage JSON des résultats Certbot par une
+modale avec suivi automatique, synthèse en français et sortie terminal. La
+liste des certificats est actualisée lorsque l’utilisateur ferme un résultat
+terminé.

@@ -11,10 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"aegisadmin/backend/internal/i18n"
 )
 
 func (a *application) configuration(w http.ResponseWriter, r *http.Request) {
-	session, _, ok := a.rootUser(w, r)
+	session, current, ok := a.rootUser(w, r)
 	if !ok {
 		return
 	}
@@ -39,12 +41,14 @@ func (a *application) configuration(w http.ResponseWriter, r *http.Request) {
 		notice = `<p class="notice notice--success">L’opération sur les snapshots est terminée.</p>`
 	}
 	available, total := inventoryCounts(inventory)
-	sourceOptions, targetOptions, comparisonDisabled := renderSnapshotCompareOptions(snapshots)
-	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{NOTICE}}", notice, "{{SUMMARY}}", renderMetricPairs([][2]string{{"Sections disponibles", strconv.Itoa(available)}, {"Sections totales", strconv.Itoa(total)}, {"Snapshots", strconv.Itoa(intValue(snapshots["count"]))}}), "{{INVENTORY}}", renderInventory(inventory), "{{SNAPSHOTS}}", renderSnapshots(snapshots, session.CSRFToken), "{{SNAPSHOT_SOURCE_OPTIONS}}", sourceOptions, "{{SNAPSHOT_TARGET_OPTIONS}}", targetOptions, "{{COMPARE_DISABLED}}", comparisonDisabled).Replace(a.configurationPage)
+	language := a.languageForUser(ctx, current.ID)
+	sourceOptions, targetOptions, comparisonDisabled := renderSnapshotCompareOptions(snapshots, language)
+	template := localizeConfigurationTemplate(a.configurationPage, language)
+	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{NOTICE}}", localizedConfigurationFragment(notice, language), "{{SUMMARY}}", renderMetricPairs([][2]string{{configText(language, "Sections disponibles", "Available sections"), formatIntegerForLanguage(int64(available), language)}, {configText(language, "Sections totales", "Total sections"), formatIntegerForLanguage(int64(total), language)}, {"Snapshots", formatIntegerForLanguage(int64(intValue(snapshots["count"])), language)}}), "{{INVENTORY}}", renderInventory(inventory, language), "{{SNAPSHOTS}}", renderSnapshots(snapshots, session.CSRFToken, language), "{{SNAPSHOT_SOURCE_OPTIONS}}", sourceOptions, "{{SNAPSHOT_TARGET_OPTIONS}}", targetOptions, "{{COMPARE_DISABLED}}", comparisonDisabled).Replace(template)
 	writeHTML(w, page, http.StatusOK)
 }
 
-func renderSnapshotCompareOptions(data map[string]any) (string, string, string) {
+func renderSnapshotCompareOptions(data map[string]any, language string) (string, string, string) {
 	items, _ := data["snapshots"].([]any)
 	valid := make([]map[string]any, 0, len(items))
 	for _, raw := range items {
@@ -55,7 +59,7 @@ func renderSnapshotCompareOptions(data map[string]any) (string, string, string) 
 		}
 	}
 	if len(valid) < 2 {
-		message := `<option value="">Au moins deux snapshots sont nécessaires</option>`
+		message := `<option value="">` + configText(language, "Au moins deux snapshots sont nécessaires", "At least two snapshots are required") + `</option>`
 		return message, message, ` disabled`
 	}
 	render := func(selected int) string {
@@ -71,7 +75,7 @@ func renderSnapshotCompareOptions(data map[string]any) (string, string, string) 
 			}
 			b.WriteString(`>` + html.EscapeString(name))
 			if created != "" {
-				b.WriteString(` · ` + html.EscapeString(created))
+				b.WriteString(` · ` + html.EscapeString(i18n.FormatRFC3339(language, created)))
 			}
 			b.WriteString(`</option>`)
 		}
@@ -90,15 +94,45 @@ func inventoryCounts(data map[string]any) (int, int) {
 	}
 	return available, len(sections)
 }
-func renderInventory(data map[string]any) string {
+
+func configText(language, fr, en string) string {
+	if language == "en" {
+		return en
+	}
+	return fr
+}
+func configurationSectionLabel(id, fallback, language string) string {
+	if language != "en" {
+		return fallback
+	}
+	labels := map[string]string{"system": "System", "packages": "Installed packages", "services": "systemd services", "accounts": "Users and groups", "network": "Network", "ports": "Listening ports", "firewall": "Firewall", "fail2ban": "Fail2ban", "php": "PHP", "apache": "Apache", "certificates": "Certificates", "mysql": "MySQL / MariaDB", "cron": "Scheduled tasks", "tor": "Tor"}
+	if label := labels[id]; label != "" {
+		return label
+	}
+	return fallback
+}
+func localizedConfigurationFragment(value, language string) string {
+	if language != "en" {
+		return value
+	}
+	return strings.ReplaceAll(value, "L’opération sur les snapshots est terminée.", "The snapshot operation completed.")
+}
+func localizeConfigurationTemplate(value, language string) string {
+	if language != "en" {
+		return value
+	}
+	return strings.NewReplacer(`lang="fr"`, `lang="en"`, "Afficher le JSON brut de la comparaison", "Show raw comparison JSON", "Configuration serveur", "Server configuration", "Inventaire en lecture seule et snapshots immuables", "Read-only inventory and immutable snapshots", "Tableau de bord", "Dashboard", "Se déconnecter", "Sign out", "Créer un snapshot", "Create snapshot", "Capturer l’état actuel", "Capture current state", "Importer un snapshot", "Import snapshot", "Nom", "Name", "Snapshot JSON", "JSON snapshot", "Importer", "Import", "Comparer des snapshots", "Compare snapshots", "Snapshot source", "Source snapshot", "Snapshot cible", "Target snapshot", "Comparer", "Compare", "Liste des Snapshots", "Snapshot list", "Inventaire actuel", "Current inventory", "Détail du snapshot", "Snapshot details", "Retour aux snapshots", "Back to snapshots", "Exporter le JSON", "Export JSON", "Informations", "Information", "Identifiant", "Identifier", "Schéma", "Schema", "Empreinte SHA-256", "SHA-256 fingerprint", "Afficher le JSON brut", "Show raw JSON", "Comparaison de snapshots", "Snapshot comparison", "Résumé de la comparaison", "Comparison summary").Replace(value)
+}
+func renderInventory(data map[string]any, language string) string {
 	sections, _ := data["sections"].([]any)
 	if len(sections) == 0 {
-		return `<p class="muted">Aucune section disponible.</p>`
+		return `<p class="muted">` + configText(language, "Aucune section disponible.", "No section available.") + `</p>`
 	}
 	var b strings.Builder
 	for _, raw := range sections {
 		item, _ := raw.(map[string]any)
 		label, _ := item["label"].(string)
+		label = configurationSectionLabel(stringValueAny(item["id"]), label, language)
 		message, _ := item["message"].(string)
 		available, _ := item["available"].(bool)
 		b.WriteString(`<article class="content-card"><h3>` + html.EscapeString(label) + `</h3>`)
@@ -112,13 +146,13 @@ func renderInventory(data map[string]any) string {
 	}
 	return b.String()
 }
-func renderSnapshots(data map[string]any, token string) string {
+func renderSnapshots(data map[string]any, token, language string) string {
 	items, _ := data["snapshots"].([]any)
 	if len(items) == 0 {
-		return `<p class="muted">Aucun snapshot.</p>`
+		return `<p class="muted">` + configText(language, "Aucun snapshot.", "No snapshot.") + `</p>`
 	}
 	var b strings.Builder
-	b.WriteString(`<div class="table-scroll"><table class="data-table snapshot-table"><thead><tr><th>Actions</th><th>Nom</th><th>Date</th><th>Source</th><th>Sections</th><th>Taille</th><th>Intégrité</th></tr></thead><tbody>`)
+	b.WriteString(`<div class="table-scroll"><table class="data-table snapshot-table"><thead><tr><th>` + configText(language, "Actions", "Actions") + `</th><th>` + configText(language, "Nom", "Name") + `</th><th>` + configText(language, "Date", "Date") + `</th><th>` + configText(language, "Source", "Source") + `</th><th>` + configText(language, "Sections", "Sections") + `</th><th>` + configText(language, "Taille", "Size") + `</th><th>` + configText(language, "Intégrité", "Integrity") + `</th></tr></thead><tbody>`)
 	for _, raw := range items {
 		item, _ := raw.(map[string]any)
 		id, _ := item["id"].(string)
@@ -130,12 +164,12 @@ func renderSnapshots(data map[string]any, token string) string {
 			name = id
 		}
 		sections := strconv.Itoa(intValue(item["available_sections"])) + " / " + strconv.Itoa(intValue(item["total_sections"]))
-		size := formatByteCount(int64(intValue(item["size"])))
-		integrityClass, integrityLabel := "danger", "Invalide"
+		size := formatByteCountForLanguage(int64(intValue(item["size"])), language)
+		integrityClass, integrityLabel := "danger", configText(language, "Invalide", "Invalid")
 		if valid {
-			integrityClass, integrityLabel = "success", "Valide"
+			integrityClass, integrityLabel = "success", configText(language, "Valide", "Valid")
 		}
-		b.WriteString(`<tr><td><div class="snapshot-table__actions"><a class="secondary-link compact-link" href="/configuration/snapshots/` + html.EscapeString(id) + `">Ouvrir</a><a class="secondary-link compact-link" href="/configuration/snapshots/` + html.EscapeString(id) + `/export">Exporter</a><form method="post" action="/configuration/snapshots/` + html.EscapeString(id) + `/delete"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input type="hidden" name="confirmation" value="` + html.EscapeString(id) + `"><button class="danger-button compact-link">Supprimer</button></form></div></td><td><form class="snapshot-table__rename" method="post" action="/configuration/snapshots/` + html.EscapeString(id) + `/name"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input name="name" value="` + html.EscapeString(name) + `" maxlength="100" aria-label="Nom du snapshot" required><button class="secondary-button compact-link">Renommer</button></form></td><td>` + html.EscapeString(created) + `</td><td>` + html.EscapeString(source) + `</td><td>` + sections + `</td><td>` + html.EscapeString(size) + `</td><td><span class="status-badge status-badge--` + integrityClass + `">` + integrityLabel + `</span></td></tr>`)
+		b.WriteString(`<tr><td><div class="snapshot-table__actions"><a class="secondary-link compact-link" href="/configuration/snapshots/` + html.EscapeString(id) + `">` + configText(language, "Ouvrir", "Open") + `</a><a class="secondary-link compact-link" href="/configuration/snapshots/` + html.EscapeString(id) + `/export">` + configText(language, "Exporter", "Export") + `</a><form method="post" action="/configuration/snapshots/` + html.EscapeString(id) + `/delete"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input type="hidden" name="confirmation" value="` + html.EscapeString(id) + `"><button class="danger-button compact-link">` + configText(language, "Supprimer", "Delete") + `</button></form></div></td><td><form class="snapshot-table__rename" method="post" action="/configuration/snapshots/` + html.EscapeString(id) + `/name"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input name="name" value="` + html.EscapeString(name) + `" maxlength="100" aria-label="` + configText(language, "Nom du snapshot", "Snapshot name") + `" required><button class="secondary-button compact-link">` + configText(language, "Renommer", "Rename") + `</button></form></td><td>` + html.EscapeString(i18n.FormatRFC3339(language, created)) + `</td><td>` + html.EscapeString(source) + `</td><td>` + sections + `</td><td>` + html.EscapeString(size) + `</td><td><span class="status-badge status-badge--` + integrityClass + `">` + integrityLabel + `</span></td></tr>`)
 	}
 	b.WriteString(`</tbody></table></div>`)
 	return b.String()
@@ -190,7 +224,7 @@ func (a *application) importConfigurationSnapshot(w http.ResponseWriter, r *http
 	http.Redirect(w, r, "/configuration?result=imported", http.StatusSeeOther)
 }
 func (a *application) compareConfigurationSnapshots(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := a.rootUser(w, r)
+	_, current, ok := a.rootUser(w, r)
 	if !ok {
 		return
 	}
@@ -207,14 +241,15 @@ func (a *application) compareConfigurationSnapshots(w http.ResponseWriter, r *ht
 		return
 	}
 	comparison := mapValue(data["comparison"])
+	language := a.languageForUser(ctx, current.ID)
 	raw, _ := json.MarshalIndent(comparison, "", "  ")
 	page := strings.NewReplacer(
 		"{{SOURCE}}", html.EscapeString(stringValueAny(comparison["source_id"])),
 		"{{TARGET}}", html.EscapeString(stringValueAny(comparison["target_id"])),
-		"{{SUMMARY}}", renderComparisonSummary(mapValue(comparison["counts"])),
-		"{{SECTIONS}}", renderComparisonSections(comparison["sections"]),
+		"{{SUMMARY}}", renderComparisonSummary(mapValue(comparison["counts"]), language),
+		"{{SECTIONS}}", renderComparisonSections(comparison["sections"], language),
 		"{{RAW}}", html.EscapeString(string(raw)),
-	).Replace(a.configurationComparePage)
+	).Replace(localizeConfigurationTemplate(a.configurationComparePage, language))
 	writeHTML(w, page, http.StatusOK)
 }
 func (a *application) renameConfigurationSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -224,7 +259,7 @@ func (a *application) deleteConfigurationSnapshot(w http.ResponseWriter, r *http
 	a.configurationPost(w, r, "snapshot-delete", func() []string { return []string{r.PathValue("id"), r.PostForm.Get("confirmation")} })
 }
 func (a *application) configurationSnapshot(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := a.rootUser(w, r)
+	_, current, ok := a.rootUser(w, r)
 	if !ok {
 		return
 	}
@@ -236,29 +271,30 @@ func (a *application) configurationSnapshot(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	snapshot := mapValue(data["snapshot"])
+	language := a.languageForUser(ctx, current.ID)
 	inventory := mapValue(snapshot["inventory"])
 	raw, _ := json.MarshalIndent(snapshot, "", "  ")
 	page := strings.NewReplacer(
 		"{{ID}}", html.EscapeString(stringValueAny(snapshot["id"])),
-		"{{CREATED}}", html.EscapeString(stringValueAny(snapshot["created_at"])),
+		"{{CREATED}}", html.EscapeString(i18n.FormatRFC3339(language, stringValueAny(snapshot["created_at"]))),
 		"{{SCHEMA}}", html.EscapeString(stringValueAny(snapshot["inventory_schema"])),
 		"{{FINGERPRINT}}", html.EscapeString(stringValueAny(snapshot["inventory_sha256"])),
-		"{{SECTIONS}}", renderSnapshotSections(inventory["sections"]),
+		"{{SECTIONS}}", renderSnapshotSections(inventory["sections"], language),
 		"{{RAW}}", html.EscapeString(string(raw)),
-	).Replace(a.configurationSnapshotPage)
+	).Replace(localizeConfigurationTemplate(a.configurationSnapshotPage, language))
 	writeHTML(w, page, http.StatusOK)
 }
 
-func renderSnapshotSections(value any) string {
+func renderSnapshotSections(value any, language string) string {
 	sections := sliceValue(value)
 	if len(sections) == 0 {
-		return `<p class="muted">Aucune section disponible.</p>`
+		return `<p class="muted">` + configText(language, "Aucune section disponible.", "No section available.") + `</p>`
 	}
 	var navigation, content strings.Builder
-	navigation.WriteString(`<nav class="snapshot-navigation" aria-label="Sections du snapshot">`)
+	navigation.WriteString(`<nav class="snapshot-navigation" aria-label="` + configText(language, "Sections du snapshot", "Snapshot sections") + `">`)
 	for index, raw := range sections {
 		section := mapValue(raw)
-		label := stringValueAny(section["label"])
+		label := configurationSectionLabel(stringValueAny(section["id"]), stringValueAny(section["label"]), language)
 		if label == "" {
 			label = stringValueAny(section["id"])
 		}
@@ -276,16 +312,19 @@ func renderSnapshotSections(value any) string {
 	return navigation.String() + content.String()
 }
 
-func renderComparisonSummary(counts map[string]any) string {
-	return renderMetricPairs([][2]string{{"Identiques", strconv.Itoa(intValue(counts["identical"]))}, {"Différentes", strconv.Itoa(intValue(counts["different"]))}, {"Absentes de la source", strconv.Itoa(intValue(counts["missing_source"]))}, {"Absentes de la cible", strconv.Itoa(intValue(counts["missing_target"]))}})
+func renderComparisonSummary(counts map[string]any, language string) string {
+	return renderMetricPairs([][2]string{{configText(language, "Identiques", "Identical"), formatIntegerForLanguage(int64(intValue(counts["identical"])), language)}, {configText(language, "Différentes", "Different"), formatIntegerForLanguage(int64(intValue(counts["different"])), language)}, {configText(language, "Absentes de la source", "Missing from source"), formatIntegerForLanguage(int64(intValue(counts["missing_source"])), language)}, {configText(language, "Absentes de la cible", "Missing from target"), formatIntegerForLanguage(int64(intValue(counts["missing_target"])), language)}})
 }
 
-func renderComparisonSections(value any) string {
+func renderComparisonSections(value any, language string) string {
 	sections := sliceValue(value)
 	if len(sections) == 0 {
-		return `<p class="muted">Aucune section à comparer.</p>`
+		return `<p class="muted">` + configText(language, "Aucune section à comparer.", "No section to compare.") + `</p>`
 	}
 	labels := map[string]string{"identical": "Identique", "different": "Modifiée", "missing_source": "Ajoutée", "missing_target": "Supprimée"}
+	if language == "en" {
+		labels = map[string]string{"identical": "Identical", "different": "Changed", "missing_source": "Added", "missing_target": "Removed"}
+	}
 	classes := map[string]string{"identical": "success", "different": "warning", "missing_source": "success", "missing_target": "danger"}
 	var b strings.Builder
 	differences := 0
@@ -296,24 +335,24 @@ func renderComparisonSections(value any) string {
 			continue
 		}
 		differences++
-		label := stringValueAny(section["label"])
+		label := configurationSectionLabel(stringValueAny(section["id"]), stringValueAny(section["label"]), language)
 		b.WriteString(`<section class="content-card snapshot-section"><header class="section-heading section-heading--flush"><h2>` + html.EscapeString(label) + `</h2><span class="status-badge status-badge--` + classes[status] + `">` + labels[status] + `</span></header>`)
-		b.WriteString(renderStructuredDifferences(section["source"], section["target"]))
+		b.WriteString(renderStructuredDifferences(section["source"], section["target"], language))
 		b.WriteString(`</section>`)
 	}
 	if differences == 0 {
-		return `<p class="notice notice--success">Aucune différence entre ces deux snapshots.</p>`
+		return `<p class="notice notice--success">` + configText(language, "Aucune différence entre ces deux snapshots.", "No difference between these snapshots.") + `</p>`
 	}
 	return b.String()
 }
 
-func renderStructuredDifferences(source, target any) string {
+func renderStructuredDifferences(source, target any, language string) string {
 	var rows strings.Builder
 	renderDifferenceRows(&rows, nil, normalizedJSONValue(source), normalizedJSONValue(target))
 	if rows.Len() == 0 {
-		return `<p class="muted">Aucune valeur différente dans cette section.</p>`
+		return `<p class="muted">` + configText(language, "Aucune valeur différente dans cette section.", "No different value in this section.") + `</p>`
 	}
-	return `<div class="table-scroll"><table class="data-table snapshot-difference-table"><thead><tr><th>Élément</th><th>Snapshot source</th><th>Snapshot cible</th></tr></thead><tbody>` + rows.String() + `</tbody></table></div>`
+	return `<div class="table-scroll"><table class="data-table snapshot-difference-table"><thead><tr><th>` + configText(language, "Élément", "Item") + `</th><th>` + configText(language, "Snapshot source", "Source snapshot") + `</th><th>` + configText(language, "Snapshot cible", "Target snapshot") + `</th></tr></thead><tbody>` + rows.String() + `</tbody></table></div>`
 }
 
 func renderDifferenceRows(rows *strings.Builder, path []string, source, target any) {

@@ -8,7 +8,16 @@ Les réglages disponibles sont :
 
 - `logs.default_source` : journal sélectionné à l’ouverture de `/logs` ;
 - `certbot.default_email` : adresse proposée lors de la création d’un
-  certificat depuis le module Apache.
+  certificat depuis le module Apache ;
+- `ui.default_language` : langue française ou anglaise utilisée avant la
+  connexion et pour les comptes sans préférence personnelle.
+
+La même page configure également l’accès HTTPS dédié et le futur transport
+SMTP. Le serveur, le port, le nom d’utilisateur et le mode de sécurité SMTP
+sont enregistrés dans SQLite. Le mot de passe est chiffré avec AES-GCM grâce à
+une clé distincte placée sous `/var/lib/aegisadmin/secrets/settings.key`. Le
+masque affiché ne contient jamais le secret. La configuration SMTP est prête
+pour les futures notifications, mais aucun courriel n’est encore envoyé.
 
 La page permet également de télécharger une sauvegarde SQLite cohérente et de
 restaurer une sauvegarde AegisAdmin compatible. La restauration vérifie

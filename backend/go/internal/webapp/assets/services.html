@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="{{LANG}}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Services — AegisAdmin</title>
+    <title>{{T:services.title}} — AegisAdmin</title>
     <link rel="stylesheet" href="/assets/app.css?v={{VERSION}}">
 </head>
 <body class="dashboard-body">
@@ -11,23 +11,23 @@
         <header class="dashboard-header">
             <div>
                 <p class="eyebrow">AegisAdmin</p>
-                <h1>Services</h1>
-                <p class="muted">État des services système autorisés · Droit {{PERMISSION}}</p>
+                <h1>{{T:services.title}}</h1>
+                <p class="muted">{{T:services.subtitle}} {{PERMISSION}}</p>
             </div>
             <div class="header-actions">
-                <a class="secondary-link" href="/go/dashboard">Tableau de bord</a>
+                <a class="secondary-link" href="/go/dashboard">{{T:services.dashboard}}</a>
                 <form method="post" action="/logout">
                     <input type="hidden" name="_token" value="{{CSRF}}">
-                    <button class="secondary-button" type="submit">Se déconnecter</button>
+                    <button class="secondary-button" type="submit">{{T:common.logout}}</button>
                 </form>
             </div>
         </header>
         {{NOTICE}}
-        <section class="summary-grid summary-grid--five" aria-label="Synthèse des services">{{SUMMARY}}</section>
+        <section class="summary-grid summary-grid--five" aria-label="{{T:services.summary}}">{{SUMMARY}}</section>
         <section class="table-panel">
             <div class="table-scroll">
                 <table class="data-table services-table">
-                    <thead><tr>{{ACTION_HEADER}}<th>Service</th><th>État</th><th>Installation</th><th>Démarrage automatique</th><th>État du service</th></tr></thead>
+                    <thead><tr>{{ACTION_HEADER}}<th>{{T:services.service}}</th><th>{{T:services.status}}</th><th>{{T:services.installation}}</th><th>{{T:services.autostart}}</th><th>{{T:services.raw_status}}</th></tr></thead>
                     <tbody>{{SERVICES}}</tbody>
                 </table>
             </div>

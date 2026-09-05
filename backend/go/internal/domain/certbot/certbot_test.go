@@ -61,12 +61,30 @@ func TestInfoAndStatus(t *testing.T) {
 	backend := &Backend{runner: runner, paths: paths, now: time.Now}
 	handler := New(backend)
 	info := handler.Handle(context.Background(), "info", nil)
-	if !info.Response.Success || (*info.Response.Data)["version"] != "2.11.0" || len((*info.Response.Data)["plugins"].([]string)) != 2 {
+	if !info.Response.Success || (*info.Response.Data)["installed"] != true || (*info.Response.Data)["version"] != "2.11.0" || len((*info.Response.Data)["plugins"].([]string)) != 2 {
 		t.Fatalf("info=%#v", info)
 	}
 	status := handler.Handle(context.Background(), "status", nil)
 	if !status.Response.Success || (*status.Response.Data)["timer_active"] != true || (*status.Response.Data)["last_trigger"] != "2026-08-15T10:00:00Z" {
 		t.Fatalf("status=%#v", status)
+	}
+}
+
+func TestReadCommandsReportMissingCertbotWithoutFailure(t *testing.T) {
+	handler := New(&Backend{runner: fakeRunner{}, paths: Paths{Certbot: filepath.Join(t.TempDir(), "missing-certbot")}, now: time.Now})
+	for _, command := range []string{"info", "status", "certificates"} {
+		reply := handler.Handle(context.Background(), command, nil)
+		if !reply.Response.Success {
+			t.Fatalf("%s=%#v", command, reply)
+		}
+	}
+	info := handler.Handle(context.Background(), "info", nil)
+	if (*info.Response.Data)["installed"] != false {
+		t.Fatalf("info=%#v", info)
+	}
+	action := handler.Handle(context.Background(), "renew", nil)
+	if action.Response.Success {
+		t.Fatalf("missing Certbot action succeeded: %#v", action)
 	}
 }
 
@@ -172,6 +190,18 @@ func TestCertificateFixture(t *testing.T) {
 	items := data["certificates"].([]Certificate)
 	if len(items) != 1 || items[0].KeyType != "RSA" || items[0].Issuer != "example.com" || items[0].DaysRemaining != 31 || items[0].Authenticator != "webroot" {
 		t.Fatalf("items=%#v", items)
+	}
+}
+
+func TestCertificatesReturnsEmptyListBeforeFirstCertificate(t *testing.T) {
+	backend := &Backend{paths: Paths{RenewalDirectory: filepath.Join(t.TempDir(), "renewal")}, now: time.Now}
+	data, failure := backend.certificates(context.Background())
+	if failure != nil {
+		t.Fatalf("failure=%#v", failure)
+	}
+	items, ok := data["certificates"].([]Certificate)
+	if !ok || len(items) != 0 || data["count"] != 0 {
+		t.Fatalf("data=%#v", data)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"io/fs"
 	"net"
@@ -23,6 +24,7 @@ import (
 
 	"aegisadmin/backend/internal/authstore"
 	"aegisadmin/backend/internal/buildinfo"
+	"aegisadmin/backend/internal/i18n"
 	"aegisadmin/backend/internal/webapache"
 	"aegisadmin/backend/internal/webauth"
 	"aegisadmin/backend/internal/webcertbot"
@@ -62,6 +64,11 @@ type ReadinessChecks struct {
 
 type UserLookup interface {
 	FindByID(context.Context, int64) (authstore.User, bool, error)
+	FindRoot(context.Context) (authstore.User, bool, error)
+	ThemeForUser(context.Context, int64) (string, error)
+	SetTheme(context.Context, int64, string) error
+	LanguageForUser(context.Context, int64) (string, error)
+	SetLanguage(context.Context, int64, string) error
 }
 type AccessLogStore interface {
 	RecordAccess(context.Context, *int64, string, string, bool, string, string) error
@@ -163,6 +170,7 @@ type UpdatesProvider interface {
 	StartUpgrade(context.Context) (string, error)
 	Job(context.Context, string) (webupdates.Job, error)
 	RefreshComposer(context.Context) error
+	Reboot(context.Context, int) error
 }
 type UserAdministrationStore interface {
 	AdminUsers(context.Context) ([]authstore.AdminUser, error)
@@ -200,6 +208,7 @@ type ConfigurationProvider interface {
 }
 
 type Dependencies struct {
+	DefaultLanguage  string
 	Readiness        ReadinessChecks
 	Sessions         *websession.Manager
 	Authenticator    *webauth.Authenticator
@@ -355,6 +364,7 @@ func Handler(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /updates", app.updates)
 	mux.HandleFunc("GET /updates/", redirectCanonical("/updates"))
 	mux.HandleFunc("POST /updates/start", app.startUpdates)
+	mux.HandleFunc("POST /updates/reboot", app.rebootServer)
 	mux.HandleFunc("GET /updates/jobs/{id}", app.updatesJob)
 	mux.HandleFunc("POST /updates/composer-refresh", app.refreshComposer)
 	mux.HandleFunc("GET /users", app.users)
@@ -390,6 +400,8 @@ func Handler(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /logout", app.logout)
 	mux.HandleFunc("GET /go/account/password", app.password)
 	mux.HandleFunc("POST /go/account/password", app.changePassword)
+	mux.HandleFunc("POST /go/account/theme", app.changeTheme)
+	mux.HandleFunc("POST /go/account/language", app.changeLanguage)
 	mux.HandleFunc("GET /go/account/two-factor/setup", app.accountTwoFactorSetup)
 	mux.HandleFunc("POST /go/account/two-factor/setup", app.confirmAccountTwoFactorSetup)
 	mux.HandleFunc("POST /go/account/two-factor/disable", app.disableAccountTwoFactor)
@@ -469,7 +481,7 @@ func (a *application) login(response http.ResponseWriter, request *http.Request)
 		}
 		http.SetCookie(response, websession.Cookie(session.ID))
 	}
-	a.renderLogin(response, session.CSRFToken, false, http.StatusOK)
+	a.renderLogin(request, response, session.CSRFToken, false, http.StatusOK)
 }
 
 func (a *application) authenticate(response http.ResponseWriter, request *http.Request) {
@@ -484,12 +496,12 @@ func (a *application) authenticate(response http.ResponseWriter, request *http.R
 		return
 	}
 	if contentType := request.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
-		a.renderLogin(response, session.CSRFToken, true, http.StatusBadRequest)
+		a.renderLogin(request, response, session.CSRFToken, true, http.StatusBadRequest)
 		return
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, 8*1024)
 	if err := request.ParseForm(); err != nil || !a.dependencies.Sessions.ValidateCSRF(session.ID, request.PostForm.Get("_token")) {
-		a.renderLogin(response, session.CSRFToken, true, http.StatusBadRequest)
+		a.renderLogin(request, response, session.CSRFToken, true, http.StatusBadRequest)
 		return
 	}
 	login, password := request.PostForm.Get("login"), request.PostForm.Get("password")
@@ -498,7 +510,7 @@ func (a *application) authenticate(response http.ResponseWriter, request *http.R
 		!a.dependencies.LoginLimiter.Allowed(address, login) {
 		a.dependencies.LoginLimiter.Failure(address, login)
 		a.recordAccess(request, nil, login, "login_failure", false)
-		a.renderLogin(response, session.CSRFToken, true, http.StatusUnauthorized)
+		a.renderLogin(request, response, session.CSRFToken, true, http.StatusUnauthorized)
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
@@ -511,7 +523,7 @@ func (a *application) authenticate(response http.ResponseWriter, request *http.R
 	if result.Step == webauth.StepInvalid {
 		a.dependencies.LoginLimiter.Failure(address, login)
 		a.recordAccess(request, nil, login, "login_failure", false)
-		a.renderLogin(response, session.CSRFToken, true, http.StatusUnauthorized)
+		a.renderLogin(request, response, session.CSRFToken, true, http.StatusUnauthorized)
 		return
 	}
 	a.dependencies.LoginLimiter.Success(login)
@@ -523,7 +535,83 @@ func (a *application) authenticate(response http.ResponseWriter, request *http.R
 		return
 	}
 	http.SetCookie(response, websession.Cookie(rotated.ID))
+	if theme, themeErr := a.dependencies.Users.ThemeForUser(request.Context(), result.User.ID); themeErr == nil {
+		http.SetCookie(response, themeCookie(theme))
+	}
+	if language, languageErr := a.dependencies.Users.LanguageForUser(request.Context(), result.User.ID); languageErr == nil {
+		if !i18n.Supported(language) {
+			language = a.defaultLanguage(request.Context())
+			_ = a.dependencies.Users.SetLanguage(request.Context(), result.User.ID, language)
+		}
+		http.SetCookie(response, languageCookie(language))
+	}
 	http.Redirect(response, request, location, http.StatusSeeOther)
+}
+
+func (a *application) changeTheme(response http.ResponseWriter, request *http.Request) {
+	session, user, found := a.authenticatedUser(response, request)
+	if !found {
+		return
+	}
+	if contentType := request.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
+		http.Error(response, "La requête est invalide.", http.StatusBadRequest)
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, 4096)
+	if err := request.ParseForm(); err != nil || !a.dependencies.Sessions.ValidateCSRF(session.ID, request.PostForm.Get("_token")) {
+		http.Error(response, "La requête est invalide.", http.StatusBadRequest)
+		return
+	}
+	theme := request.PostForm.Get("theme")
+	if theme != "dark" && theme != "light" && theme != "bootstrap" && theme != "neon" {
+		http.Error(response, "Le thème demandé est invalide.", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 3*time.Second)
+	defer cancel()
+	if err := a.dependencies.Users.SetTheme(ctx, user.ID, theme); err != nil {
+		http.Error(response, "Le thème n’a pas pu être enregistré.", http.StatusServiceUnavailable)
+		return
+	}
+	http.SetCookie(response, themeCookie(theme))
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func themeCookie(theme string) *http.Cookie {
+	return &http.Cookie{Name: "aegisadmin_theme", Value: theme, Path: "/", MaxAge: 31536000, Secure: true, HttpOnly: false, SameSite: http.SameSiteStrictMode}
+}
+
+func (a *application) changeLanguage(response http.ResponseWriter, request *http.Request) {
+	session, user, found := a.authenticatedUser(response, request)
+	if !found {
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, 4096)
+	if contentType := request.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
+		http.Error(response, "La requête est invalide.", http.StatusBadRequest)
+		return
+	}
+	if err := request.ParseForm(); err != nil || !a.dependencies.Sessions.ValidateCSRF(session.ID, request.PostForm.Get("_token")) {
+		http.Error(response, "La requête est invalide.", http.StatusBadRequest)
+		return
+	}
+	language := request.PostForm.Get("language")
+	if !i18n.Supported(language) {
+		http.Error(response, "La langue demandée est invalide.", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 3*time.Second)
+	defer cancel()
+	if err := a.dependencies.Users.SetLanguage(ctx, user.ID, language); err != nil {
+		http.Error(response, "La langue n’a pas pu être enregistrée.", http.StatusServiceUnavailable)
+		return
+	}
+	http.SetCookie(response, languageCookie(language))
+	http.Redirect(response, request, "/go/account/password?result=language", http.StatusSeeOther)
+}
+
+func languageCookie(language string) *http.Cookie {
+	return &http.Cookie{Name: "aegisadmin_language", Value: language, Path: "/", MaxAge: 31536000, Secure: true, HttpOnly: false, SameSite: http.SameSiteStrictMode}
 }
 
 func (a *application) dashboard(response http.ResponseWriter, request *http.Request) {
@@ -542,18 +630,19 @@ func (a *application) dashboard(response http.ResponseWriter, request *http.Requ
 		http.Error(response, "Les indicateurs du serveur n’ont pas pu être chargés.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(request.Context(), user.ID)
 	page := strings.NewReplacer(
 		"{{USER}}", html.EscapeString(user.Login),
 		"{{CSRF}}", html.EscapeString(session.CSRFToken),
-		"{{SYSTEM_INFORMATION}}", renderSystemInformation(snapshot.Information, snapshot.UptimeSeconds),
-		"{{RESOURCES}}", renderOverview(filterDashboardCards(snapshot.Cards, false)),
-		"{{SUPERVISION}}", renderOverview(filterDashboardCards(snapshot.Cards, true)),
-	).Replace(a.dashboardPage)
+		"{{SYSTEM_INFORMATION}}", renderSystemInformation(snapshot.Information, snapshot.UptimeSeconds, language),
+		"{{RESOURCES}}", renderOverview(localizeDashboardCards(filterDashboardCards(snapshot.Cards, false), language)),
+		"{{SUPERVISION}}", renderOverview(localizeDashboardCards(filterDashboardCards(snapshot.Cards, true), language)),
+	).Replace(i18n.Localize(a.dashboardPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 
 func (a *application) dashboardResources(response http.ResponseWriter, request *http.Request) {
-	_, _, found := a.authenticatedUser(response, request)
+	_, user, found := a.authenticatedUser(response, request)
 	if !found {
 		return
 	}
@@ -568,11 +657,11 @@ func (a *application) dashboardResources(response http.ResponseWriter, request *
 		http.Error(response, "Les ressources système n’ont pas pu être actualisées.", http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(response, cards, http.StatusOK)
+	writeJSON(response, localizeDashboardCards(cards, a.languageForUser(ctx, user.ID)), http.StatusOK)
 }
 
 func (a *application) dashboardSupervision(response http.ResponseWriter, request *http.Request) {
-	_, _, found := a.authenticatedUser(response, request)
+	_, user, found := a.authenticatedUser(response, request)
 	if !found {
 		return
 	}
@@ -587,11 +676,11 @@ func (a *application) dashboardSupervision(response http.ResponseWriter, request
 		http.Error(response, "La supervision n’a pas pu être actualisée.", http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(response, cards, http.StatusOK)
+	writeJSON(response, localizeDashboardCards(cards, a.languageForUser(ctx, user.ID)), http.StatusOK)
 }
 
 func (a *application) updatesSummary(response http.ResponseWriter, request *http.Request) {
-	_, _, found := a.authenticatedUser(response, request)
+	_, user, found := a.authenticatedUser(response, request)
 	if !found {
 		return
 	}
@@ -602,11 +691,41 @@ func (a *application) updatesSummary(response http.ResponseWriter, request *http
 	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
 	defer cancel()
 	summary, err := a.dependencies.Updates.Summary(ctx)
+	language := a.languageForUser(ctx, user.ID)
 	if err != nil {
-		writeJSON(response, webupdates.Summary{Success: false, Message: "L’état des mises à jour est indisponible.", Status: "neutral", StatusLabel: "Indisponible", Value: "État indisponible", Subtitle: "La vérification n’a pas pu être effectuée.", URL: "/updates"}, http.StatusServiceUnavailable)
+		failure := webupdates.Summary{Success: false, Message: "L’état des mises à jour est indisponible.", Status: "neutral", StatusLabel: "Indisponible", Value: "État indisponible", Subtitle: "La vérification n’a pas pu être effectuée.", URL: "/updates"}
+		writeJSON(response, localizeUpdatesSummary(failure, language), http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(response, summary, http.StatusOK)
+	writeJSON(response, localizeUpdatesSummary(summary, language), http.StatusOK)
+}
+
+func localizeUpdatesSummary(summary webupdates.Summary, language string) webupdates.Summary {
+	if language != "en" {
+		return summary
+	}
+	labels := map[string]string{"Sécurité": "Security", "Mises à jour disponibles": "Updates available", "Redémarrage requis": "Reboot required", "État partiel": "Partial status", "À jour": "Up to date", "Indisponible": "Unavailable"}
+	if value := labels[summary.StatusLabel]; value != "" {
+		summary.StatusLabel = value
+	}
+	if summary.UpdatesAvailable {
+		word := "updates"
+		if summary.UpdateCount == 1 {
+			word = "update"
+		}
+		summary.Value = fmt.Sprintf("%d %s", summary.UpdateCount, word)
+		summary.Subtitle = fmt.Sprintf("%d packages · %d firmware · %d security", summary.APTUpdateCount, summary.FirmwareUpdateCount, summary.SecurityUpdateCount)
+	} else if summary.RebootRequired {
+		summary.Value, summary.Subtitle = "Reboot required", "No new update available."
+	} else if !summary.Complete {
+		summary.Value, summary.Subtitle = "Packages up to date", "Firmware monitoring unavailable."
+	} else {
+		summary.Value, summary.Subtitle = "System up to date", "No package or firmware update."
+	}
+	if !summary.Success {
+		summary.Message, summary.Value, summary.Subtitle = "Update status is unavailable.", "Status unavailable", "The check could not be completed."
+	}
+	return summary
 }
 
 func (a *application) processes(response http.ResponseWriter, request *http.Request) {
@@ -633,18 +752,19 @@ func (a *application) processes(response http.ResponseWriter, request *http.Requ
 		http.Error(response, "Les processus n’ont pas pu être chargés.", http.StatusServiceUnavailable)
 		return
 	}
-	rows := renderProcesses(snapshot.Processes)
+	language := a.languageForUser(ctx, user.ID)
+	rows := renderProcesses(snapshot.Processes, language)
 	notice := ""
 	if snapshot.Truncated {
-		notice = `<p class="notice">Seuls les ` + strconv.FormatInt(snapshot.Returned, 10) + ` premiers processus sur ` + strconv.FormatInt(snapshot.Total, 10) + ` sont affichés.</p>`
+		notice = `<p class="notice">` + html.EscapeString(fmt.Sprintf(i18n.Text(language, "processes.truncated"), strconv.FormatInt(snapshot.Returned, 10), strconv.FormatInt(snapshot.Total, 10))) + `</p>`
 	}
-	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{TOTAL}}", strconv.FormatInt(snapshot.Total, 10), "{{RETURNED}}", strconv.FormatInt(snapshot.Returned, 10), "{{LIMIT}}", strconv.FormatInt(snapshot.Limit, 10), "{{NOTICE}}", notice, "{{PROCESSES}}", rows).Replace(a.processesPage)
+	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{TOTAL}}", strconv.FormatInt(snapshot.Total, 10), "{{RETURNED}}", strconv.FormatInt(snapshot.Returned, 10), "{{LIMIT}}", strconv.FormatInt(snapshot.Limit, 10), "{{NOTICE}}", notice, "{{PROCESSES}}", rows).Replace(i18n.Localize(a.processesPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 
-func renderProcesses(processes []webdashboard.Process) string {
+func renderProcesses(processes []webdashboard.Process, language string) string {
 	if len(processes) == 0 {
-		return `<tr><td colspan="8" class="muted">Aucun processus détecté.</td></tr>`
+		return `<tr><td colspan="8" class="muted">` + html.EscapeString(i18n.Text(language, "processes.empty")) + `</td></tr>`
 	}
 	var result strings.Builder
 	for _, process := range processes {
@@ -657,14 +777,33 @@ func renderProcesses(processes []webdashboard.Process) string {
 			label := html.EscapeString(process.Name + " : " + description)
 			name = `<span class="process-name process-name--described" tabindex="0" title="` + html.EscapeString(description) + `" aria-label="` + label + `">` + name + `<span class="process-name__help" aria-hidden="true">?</span></span>`
 		}
-		result.WriteString(`<tr><td data-sort-value="` + strconv.FormatInt(process.PIDValue, 10) + `">` + html.EscapeString(process.PID) + `</td><th data-sort-value="` + html.EscapeString(strings.ToLower(process.Name)) + `">` + name + `</th><td data-sort-value="` + html.EscapeString(strings.ToLower(process.User)) + `">` + html.EscapeString(process.User) + `</td><td data-sort-value="` + html.EscapeString(strings.ToLower(process.StateLabel+" "+process.State)) + `"><span class="status-badge status-badge--` + status + `">` + html.EscapeString(process.StateLabel+" · "+process.State) + `</span></td><td data-sort-value="` + strconv.FormatFloat(process.CPUPercentValue, 'f', -1, 64) + `">` + html.EscapeString(process.CPU) + `</td><td data-sort-value="` + strconv.FormatFloat(process.MemoryPercentValue, 'f', -1, 64) + `">` + html.EscapeString(process.MemoryPercent) + `</td><td data-sort-value="` + strconv.FormatInt(process.MemoryBytes, 10) + `">` + html.EscapeString(process.Memory) + `</td><td data-sort-value="` + strconv.FormatInt(process.ElapsedSeconds, 10) + `">` + html.EscapeString(process.Elapsed) + `</td></tr>`)
+		stateLabel := processStateLabel(process.State, process.StateLabel, language)
+		result.WriteString(`<tr><td data-sort-value="` + strconv.FormatInt(process.PIDValue, 10) + `">` + html.EscapeString(process.PID) + `</td><th data-sort-value="` + html.EscapeString(strings.ToLower(process.Name)) + `">` + name + `</th><td data-sort-value="` + html.EscapeString(strings.ToLower(process.User)) + `">` + html.EscapeString(process.User) + `</td><td data-sort-value="` + html.EscapeString(strings.ToLower(stateLabel+" "+process.State)) + `"><span class="status-badge status-badge--` + status + `">` + html.EscapeString(stateLabel+" · "+process.State) + `</span></td><td data-sort-value="` + strconv.FormatFloat(process.CPUPercentValue, 'f', -1, 64) + `">` + html.EscapeString(process.CPU) + `</td><td data-sort-value="` + strconv.FormatFloat(process.MemoryPercentValue, 'f', -1, 64) + `">` + html.EscapeString(process.MemoryPercent) + `</td><td data-sort-value="` + strconv.FormatInt(process.MemoryBytes, 10) + `">` + html.EscapeString(process.Memory) + `</td><td data-sort-value="` + strconv.FormatInt(process.ElapsedSeconds, 10) + `">` + html.EscapeString(process.Elapsed) + `</td></tr>`)
 	}
 	return result.String()
 }
 
-func renderSystemInformation(information []webdashboard.Information, uptimeSeconds int64) string {
+func processStateLabel(state, fallback, language string) string {
+	if state == "" {
+		return i18n.Text(language, "processes.state.unknown")
+	}
+	keys := map[byte]string{
+		'R': "running", 'S': "sleeping", 'D': "disk_wait", 'T': "stopped", 't': "stopped",
+		'Z': "zombie", 'X': "dead", 'x': "dead", 'K': "wakekill", 'I': "idle",
+		'P': "parked", 'W': "paging",
+	}
+	if key := keys[state[0]]; key != "" {
+		return i18n.Text(language, "processes.state."+key)
+	}
+	if fallback != "" && language != "en" {
+		return fallback
+	}
+	return i18n.Text(language, "processes.state.unknown")
+}
+
+func renderSystemInformation(information []webdashboard.Information, uptimeSeconds int64, language string) string {
 	if len(information) == 0 {
-		return `<p class="muted">Les informations générales du système ne sont pas disponibles.</p>`
+		return `<p class="muted">` + html.EscapeString(i18n.Text(language, "dashboard.unavailable")) + `</p>`
 	}
 	var result strings.Builder
 	result.WriteString(`<dl class="detail-grid dashboard-information">`)
@@ -673,9 +812,18 @@ func renderSystemInformation(information []webdashboard.Information, uptimeSecon
 		if item.Label == "Durée de fonctionnement" {
 			attributes = ` data-dashboard-uptime data-dashboard-uptime-seconds="` + strconv.FormatInt(uptimeSeconds, 10) + `"`
 		}
-		result.WriteString(`<div><dt>` + html.EscapeString(item.Label) + `</dt><dd` + attributes + `>` + html.EscapeString(item.Value) + `</dd></div>`)
+		labels := map[string]string{"Nom d’hôte": "dashboard.host", "Système d’exploitation": "dashboard.os", "Distribution": "dashboard.distribution", "Version": "dashboard.version", "Noyau": "dashboard.kernel", "Architecture": "dashboard.architecture", "Durée de fonctionnement": "dashboard.uptime"}
+		label := item.Label
+		if key := labels[item.Label]; key != "" {
+			label = i18n.Text(language, key)
+		}
+		value := item.Value
+		if item.Label == "Durée de fonctionnement" {
+			value = formatDashboardUptime(uptimeSeconds, language)
+		}
+		result.WriteString(`<div><dt>` + html.EscapeString(label) + `</dt><dd` + attributes + `>` + html.EscapeString(value) + `</dd></div>`)
 	}
-	result.WriteString(`<div class="dashboard-information__updates" data-dashboard-updates data-dashboard-updates-url="/updates/summary" aria-live="polite" aria-busy="true"><dt>Mises à jour</dt><dd><span data-dashboard-updates-value>Vérification en cours…</span><a href="/updates" data-dashboard-updates-link hidden>Consulter les mises à jour</a></dd></div>`)
+	result.WriteString(`<div class="dashboard-information__updates" data-dashboard-updates data-dashboard-updates-url="/updates/summary" aria-live="polite" aria-busy="true"><dt>` + html.EscapeString(i18n.Text(language, "dashboard.updates")) + `</dt><dd><span data-dashboard-updates-value>` + html.EscapeString(i18n.Text(language, "dashboard.checking")) + `</span><a href="/updates" data-dashboard-updates-link hidden>` + html.EscapeString(i18n.Text(language, "dashboard.view_updates")) + `</a></dd></div>`)
 	result.WriteString(`</dl>`)
 	return result.String()
 }
@@ -689,6 +837,40 @@ func filterDashboardCards(cards []webdashboard.Card, supervision bool) []webdash
 		}
 	}
 	return result
+}
+
+func localizeDashboardCards(cards []webdashboard.Card, language string) []webdashboard.Card {
+	localized := append([]webdashboard.Card(nil), cards...)
+	if language != "en" {
+		return localized
+	}
+	titles := map[string]string{"cpu": "dashboard.cpu", "memory": "dashboard.memory", "temperature": "dashboard.temperature", "processes": "dashboard.processes", "storage": "dashboard.storage", "services": "dashboard.services", "network": "dashboard.network"}
+	for index := range localized {
+		card := &localized[index]
+		if key := titles[card.ID]; key != "" {
+			card.Title = i18n.Text(language, key)
+		}
+		card.Value = strings.NewReplacer("Indisponible", "Unavailable", " actifs", " active", " actives", " up", " volume(s)", " volumes", ",", ".").Replace(card.Value)
+		card.Subtitle = strings.NewReplacer("Lecture impossible", "Unable to read", "Processus actuellement détectés", "Processes currently detected", "Aucun capteur CPU disponible", "No CPU sensor available", "Capteur :", "Sensor:", " disponibles", " available", " utilisés sur ", " used out of ", "Occupation maximale :", "Maximum usage:", " service(s) surveillé(s)", " monitored services", " interface(s) arrêtée(s)", " interfaces down", "cœur(s)", "cores", "Charge :", "Load:", " à ", " at ", " o", " B", " Kio", " KiB", " Mio", " MiB", " Gio", " GiB", " Tio", " TiB", ",", ".").Replace(card.Subtitle)
+	}
+	return localized
+}
+
+func formatDashboardUptime(seconds int64, language string) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	days, hours, minutes := seconds/86400, seconds%86400/3600, seconds%3600/60
+	if language == "en" {
+		if days > 0 {
+			return fmt.Sprintf("%d d %d h %d min", days, hours, minutes)
+		}
+		return fmt.Sprintf("%d h %d min", hours, minutes)
+	}
+	if days > 0 {
+		return fmt.Sprintf("%d j %d h %d min", days, hours, minutes)
+	}
+	return fmt.Sprintf("%d h %d min", hours, minutes)
 }
 
 func (a *application) navigationMenu(response http.ResponseWriter, request *http.Request) {
@@ -707,6 +889,7 @@ func (a *application) navigationMenu(response http.ResponseWriter, request *http
 		http.Error(response, "Navigation indisponible.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(ctx, user.ID)
 	type menuModule struct{ Name, Icon, Route string }
 	type menuCategory struct {
 		Name    string
@@ -714,7 +897,14 @@ func (a *application) navigationMenu(response http.ResponseWriter, request *http
 	}
 	result := make([]menuCategory, 0, len(categories))
 	for _, category := range categories {
-		item := menuCategory{Name: category.Name, Modules: []menuModule{}}
+		categoryName := category.Name
+		if language == "en" {
+			categoryName = map[string]string{"Vue générale": "Overview", "Supervision": "Monitoring", "Services": "Services", "Sécurité": "Security", "Administration": "Administration"}[category.Name]
+			if categoryName == "" {
+				categoryName = category.Name
+			}
+		}
+		item := menuCategory{Name: categoryName, Modules: []menuModule{}}
 		for _, module := range category.Modules {
 			route := goModuleRoute(module.Key)
 			if route != "" {
@@ -782,22 +972,23 @@ func (a *application) storage(response http.ResponseWriter, request *http.Reques
 		http.Error(response, "Les informations de stockage n’ont pas pu être chargées.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(ctx, user.ID)
 	page := strings.NewReplacer(
 		"{{CSRF}}", html.EscapeString(session.CSRFToken),
-		"{{PERMISSION}}", html.EscapeString(permissionLabel(level)),
-		"{{SUMMARY}}", renderStorageSummary(snapshot.Summary),
-		"{{MOUNTS}}", renderStorageMounts(snapshot.Mounts),
-	).Replace(a.storagePage)
+		"{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)),
+		"{{SUMMARY}}", renderStorageSummary(snapshot.Summary, language),
+		"{{MOUNTS}}", renderStorageMounts(snapshot.Mounts, language),
+	).Replace(i18n.Localize(a.storagePage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 
-func renderStorageSummary(summary webstorage.Summary) string {
+func renderStorageSummary(summary webstorage.Summary, language string) string {
 	items := []struct {
 		label string
 		value int
 	}{
-		{"Volumes", summary.Total}, {"État normal", summary.Normal},
-		{"À surveiller", summary.Warning}, {"Critiques", summary.Danger},
+		{i18n.Text(language, "storage.volumes"), summary.Total}, {i18n.Text(language, "storage.normal"), summary.Normal},
+		{i18n.Text(language, "storage.warning"), summary.Warning}, {i18n.Text(language, "storage.critical"), summary.Danger},
 	}
 	var result strings.Builder
 	for _, item := range items {
@@ -810,9 +1001,9 @@ func renderStorageSummary(summary webstorage.Summary) string {
 	return result.String()
 }
 
-func renderStorageMounts(mounts []webstorage.Mount) string {
+func renderStorageMounts(mounts []webstorage.Mount, language string) string {
 	if len(mounts) == 0 {
-		return `<tr><td colspan="9" class="muted">Aucun volume n’a été détecté.</td></tr>`
+		return `<tr><td colspan="9" class="muted">` + html.EscapeString(i18n.Text(language, "storage.empty")) + `</td></tr>`
 	}
 	var result strings.Builder
 	for _, mount := range mounts {
@@ -822,7 +1013,20 @@ func renderStorageMounts(mounts []webstorage.Mount) string {
 		}
 		physicalDevice := mount.PhysicalDevice
 		if physicalDevice == "" {
-			physicalDevice = "Indéterminé"
+			physicalDevice = i18n.Text(language, "storage.undetermined")
+		}
+		statusLabel := mount.StatusLabel
+		if language == "en" {
+			switch status {
+			case "success":
+				statusLabel = "Healthy"
+			case "warning":
+				statusLabel = "Warning"
+			case "danger":
+				statusLabel = "Critical"
+			default:
+				statusLabel = "Unknown"
+			}
 		}
 		result.WriteString(`<tr>`)
 		cells := []struct {
@@ -848,11 +1052,11 @@ func renderStorageMounts(mounts []webstorage.Mount) string {
 		result.WriteString(`">`)
 		result.WriteString(strconv.Itoa(mount.Percent))
 		result.WriteString(` %</td><td data-sort-value="`)
-		result.WriteString(html.EscapeString(strings.ToLower(mount.StatusLabel)))
+		result.WriteString(html.EscapeString(strings.ToLower(statusLabel)))
 		result.WriteString(`"><span class="status-badge status-badge--`)
 		result.WriteString(status)
 		result.WriteString(`">`)
-		result.WriteString(html.EscapeString(mount.StatusLabel))
+		result.WriteString(html.EscapeString(statusLabel))
 		result.WriteString(`</span></td><td data-sort-value="` + html.EscapeString(strings.ToLower(mount.Source)) + `">` + html.EscapeString(mount.Source) + `</td></tr>`)
 	}
 	return result.String()
@@ -882,23 +1086,24 @@ func (a *application) services(response http.ResponseWriter, request *http.Reque
 		http.Error(response, "Les services n’ont pas pu être chargés.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(ctx, user.ID)
 	canAct := level == "action" || level == "modify"
 	notice := ""
 	if request.URL.Query().Get("result") == "restarted" {
-		notice = `<p class="notice notice--success">Le service a été redémarré.</p>`
+		notice = `<p class="notice notice--success">` + html.EscapeString(i18n.Text(language, "services.restarted")) + `</p>`
 	}
 	actionHeader := ""
 	if canAct {
-		actionHeader = "<th>Action</th>"
+		actionHeader = "<th>" + html.EscapeString(i18n.Text(language, "services.action")) + "</th>"
 	}
 	page := strings.NewReplacer(
 		"{{CSRF}}", html.EscapeString(session.CSRFToken),
-		"{{PERMISSION}}", html.EscapeString(permissionLabel(level)),
+		"{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)),
 		"{{NOTICE}}", notice,
-		"{{SUMMARY}}", renderServicesSummary(snapshot.Summary),
+		"{{SUMMARY}}", renderServicesSummary(snapshot.Summary, language),
 		"{{ACTION_HEADER}}", actionHeader,
-		"{{SERVICES}}", renderServices(snapshot.Services, session.CSRFToken, canAct),
-	).Replace(a.servicesPage)
+		"{{SERVICES}}", renderServices(snapshot.Services, session.CSRFToken, canAct, language),
+	).Replace(i18n.Localize(a.servicesPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 
@@ -948,13 +1153,13 @@ func (a *application) modulePermission(response http.ResponseWriter, request *ht
 	return level, granted, true
 }
 
-func renderServicesSummary(summary webservices.Summary) string {
+func renderServicesSummary(summary webservices.Summary, language string) string {
 	items := []struct {
 		label string
 		value int
 	}{
-		{"Services autorisés", summary.Total}, {"Installés", summary.Installed},
-		{"Actifs", summary.Active}, {"Inactifs", summary.Inactive}, {"Absents", summary.Missing},
+		{i18n.Text(language, "services.allowed"), summary.Total}, {i18n.Text(language, "services.installed"), summary.Installed},
+		{i18n.Text(language, "services.active"), summary.Active}, {i18n.Text(language, "services.inactive"), summary.Inactive}, {i18n.Text(language, "services.missing"), summary.Missing},
 	}
 	var result strings.Builder
 	for _, item := range items {
@@ -967,13 +1172,13 @@ func renderServicesSummary(summary webservices.Summary) string {
 	return result.String()
 }
 
-func renderServices(services []webservices.Service, csrf string, canAct bool) string {
+func renderServices(services []webservices.Service, csrf string, canAct bool, language string) string {
 	columns := 5
 	if canAct {
 		columns++
 	}
 	if len(services) == 0 {
-		return `<tr><td colspan="` + strconv.Itoa(columns) + `" class="muted">Aucun service autorisé n’a été retourné.</td></tr>`
+		return `<tr><td colspan="` + strconv.Itoa(columns) + `" class="muted">` + html.EscapeString(i18n.Text(language, "services.empty")) + `</td></tr>`
 	}
 	var result strings.Builder
 	for _, service := range services {
@@ -989,20 +1194,40 @@ func renderServices(services []webservices.Service, csrf string, canAct bool) st
 				result.WriteString(html.EscapeString(csrf))
 				result.WriteString(`"><input type="hidden" name="service" value="`)
 				result.WriteString(html.EscapeString(service.ID))
-				result.WriteString(`"><button class="danger-button" type="submit">Redémarrer</button></form>`)
+				result.WriteString(`"><button class="danger-button" type="submit">` + html.EscapeString(i18n.Text(language, "services.restart")) + `</button></form>`)
 			}
 			result.WriteString(`</td>`)
 		}
 		result.WriteString(`<th scope="row">`)
 		result.WriteString(html.EscapeString(service.ID))
 		result.WriteString(`</th><td><span class="status-badge status-badge--` + status + `">`)
-		result.WriteString(html.EscapeString(service.StatusLabel))
-		result.WriteString(`</span></td><td>` + yesNo(service.Exists) + `</td><td>` + yesNo(service.Enabled) + `</td><td>`)
+		result.WriteString(html.EscapeString(serviceStatusLabel(service, language)))
+		result.WriteString(`</span></td><td>` + yesNoForLanguage(service.Exists, language) + `</td><td>` + yesNoForLanguage(service.Enabled, language) + `</td><td>`)
 		result.WriteString(html.EscapeString(service.State))
 		result.WriteString(`</td>`)
 		result.WriteString(`</tr>`)
 	}
 	return result.String()
+}
+
+func serviceStatusLabel(service webservices.Service, language string) string {
+	if !service.Exists {
+		return i18n.Text(language, "services.status.missing")
+	}
+	if service.Active {
+		return i18n.Text(language, "services.status.active")
+	}
+	if service.State == "failed" {
+		return i18n.Text(language, "services.status.failed")
+	}
+	return i18n.Text(language, "services.status.stopped")
+}
+
+func yesNoForLanguage(value bool, language string) string {
+	if value {
+		return i18n.Text(language, "common.yes")
+	}
+	return i18n.Text(language, "common.no")
 }
 
 func yesNo(value bool) string {
@@ -1041,21 +1266,22 @@ func (a *application) network(response http.ResponseWriter, request *http.Reques
 		http.Error(response, "Les informations réseau n’ont pas pu être chargées.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(ctx, user.ID)
 	page := strings.NewReplacer(
 		"{{CSRF}}", html.EscapeString(session.CSRFToken),
-		"{{PERMISSION}}", html.EscapeString(permissionLabel(level)),
-		"{{SUMMARY}}", renderNetworkSummary(snapshot.Summary),
-		"{{INTERFACES}}", renderNetworkInterfaces(snapshot.Interfaces, snapshot.Selected),
-		"{{DETAILS}}", renderNetworkDetails(snapshot.Selected),
-	).Replace(a.networkPage)
+		"{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)),
+		"{{SUMMARY}}", renderNetworkSummary(snapshot.Summary, language),
+		"{{INTERFACES}}", renderNetworkInterfaces(snapshot.Interfaces, snapshot.Selected, language),
+		"{{DETAILS}}", renderNetworkDetails(snapshot.Selected, language),
+	).Replace(i18n.Localize(a.networkPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 
-func renderNetworkSummary(summary webnetwork.Summary) string {
+func renderNetworkSummary(summary webnetwork.Summary, language string) string {
 	items := []struct {
 		label string
 		value int
-	}{{"Interfaces détectées", summary.Total}, {"Actives", summary.Up}, {"Arrêtées", summary.Down}, {"État inconnu", summary.Unknown}}
+	}{{i18n.Text(language, "network.detected"), summary.Total}, {i18n.Text(language, "network.active"), summary.Up}, {i18n.Text(language, "network.down"), summary.Down}, {i18n.Text(language, "network.unknown"), summary.Unknown}}
 	var result strings.Builder
 	for _, item := range items {
 		result.WriteString(`<article class="summary-item"><span>` + item.label + `</span><strong>` + strconv.Itoa(item.value) + `</strong></article>`)
@@ -1063,9 +1289,9 @@ func renderNetworkSummary(summary webnetwork.Summary) string {
 	return result.String()
 }
 
-func renderNetworkInterfaces(interfaces []webnetwork.Interface, selected *webnetwork.Interface) string {
+func renderNetworkInterfaces(interfaces []webnetwork.Interface, selected *webnetwork.Interface, language string) string {
 	if len(interfaces) == 0 {
-		return `<tr><td colspan="4" class="muted">Aucune interface réseau n’a été détectée.</td></tr>`
+		return `<tr><td colspan="4" class="muted">` + html.EscapeString(i18n.Text(language, "network.empty")) + `</td></tr>`
 	}
 	selectedID := ""
 	if selected != nil {
@@ -1079,38 +1305,63 @@ func renderNetworkInterfaces(interfaces []webnetwork.Interface, selected *webnet
 		}
 		result.WriteString(`<tr><td>`)
 		if item.ID == selectedID {
-			result.WriteString(`<span class="network-selected-button" aria-current="true">Sélectionnée</span>`)
+			result.WriteString(`<span class="network-selected-button" aria-current="true">` + html.EscapeString(i18n.Text(language, "network.selected")) + `</span>`)
 		} else {
-			result.WriteString(`<a class="secondary-link" href="/network?interface=` + url.QueryEscape(item.ID) + `">Afficher</a>`)
+			result.WriteString(`<a class="secondary-link" href="/network?interface=` + url.QueryEscape(item.ID) + `">` + html.EscapeString(i18n.Text(language, "network.show")) + `</a>`)
 		}
-		result.WriteString(`</td><th scope="row">` + html.EscapeString(item.Name) + `</th><td>` + html.EscapeString(item.TypeLabel) + `</td><td><span class="status-badge status-badge--` + status + `">` + html.EscapeString(item.StatusLabel) + `</span></td></tr>`)
+		result.WriteString(`</td><th scope="row">` + html.EscapeString(item.Name) + `</th><td>` + html.EscapeString(networkTypeLabel(item.Type, item.TypeLabel, language)) + `</td><td><span class="status-badge status-badge--` + status + `">` + html.EscapeString(networkStatusLabel(item.State, language)) + `</span></td></tr>`)
 	}
 	return result.String()
 }
 
-func renderNetworkDetails(item *webnetwork.Interface) string {
+func renderNetworkDetails(item *webnetwork.Interface, language string) string {
 	if item == nil {
 		return ""
 	}
-	mac, mtu := "Non disponible", "Non disponible"
+	mac, mtu := i18n.Text(language, "network.unavailable"), i18n.Text(language, "network.unavailable")
 	if item.MAC != nil {
 		mac = *item.MAC
 	}
 	if item.MTU != nil {
 		mtu = strconv.Itoa(*item.MTU)
 	}
-	return `<section class="detail-panel"><h2>Détails de ` + html.EscapeString(item.Name) + `</h2><dl class="detail-grid"><div><dt>Type</dt><dd>` + html.EscapeString(item.TypeLabel) + `</dd></div><div><dt>Adresse MAC</dt><dd>` + html.EscapeString(mac) + `</dd></div><div><dt>MTU</dt><dd>` + html.EscapeString(mtu) + `</dd></div><div><dt>IPv4</dt><dd>` + renderAddresses(item.IPv4) + `</dd></div><div><dt>IPv6</dt><dd>` + renderAddresses(item.IPv6) + `</dd></div></dl></section>`
+	return `<section class="detail-panel"><h2>` + html.EscapeString(i18n.Text(language, "network.details")) + ` ` + html.EscapeString(item.Name) + `</h2><dl class="detail-grid"><div><dt>` + html.EscapeString(i18n.Text(language, "network.type")) + `</dt><dd>` + html.EscapeString(networkTypeLabel(item.Type, item.TypeLabel, language)) + `</dd></div><div><dt>` + html.EscapeString(i18n.Text(language, "network.mac")) + `</dt><dd>` + html.EscapeString(mac) + `</dd></div><div><dt>MTU</dt><dd>` + html.EscapeString(mtu) + `</dd></div><div><dt>IPv4</dt><dd>` + renderAddresses(item.IPv4, language) + `</dd></div><div><dt>IPv6</dt><dd>` + renderAddresses(item.IPv6, language) + `</dd></div></dl></section>`
 }
 
-func renderAddresses(addresses []webnetwork.Address) string {
+func renderAddresses(addresses []webnetwork.Address, language string) string {
 	if len(addresses) == 0 {
-		return "Aucune"
+		return i18n.Text(language, "network.none")
 	}
 	values := make([]string, 0, len(addresses))
 	for _, address := range addresses {
 		values = append(values, html.EscapeString(address.Address)+"/"+strconv.Itoa(address.Prefix))
 	}
 	return strings.Join(values, "<br>")
+}
+
+func networkStatusLabel(state, language string) string {
+	switch state {
+	case "up":
+		return i18n.Text(language, "network.status.active")
+	case "down":
+		return i18n.Text(language, "network.status.down")
+	default:
+		return i18n.Text(language, "network.status.unknown")
+	}
+}
+
+func networkTypeLabel(kind, fallback, language string) string {
+	keys := map[string]string{
+		"loopback": "network.type.loopback", "bridge": "network.type.bridge", "bond": "network.type.bond",
+		"tun": "network.type.tun", "tap": "network.type.tap",
+	}
+	if key := keys[kind]; key != "" {
+		return i18n.Text(language, key)
+	}
+	if kind == "ethernet" || kind == "vlan" || kind == "wireguard" {
+		return fallback
+	}
+	return i18n.Text(language, "network.type.unknown")
 }
 
 func (a *application) logs(response http.ResponseWriter, request *http.Request) {
@@ -1157,28 +1408,34 @@ func (a *application) logs(response http.ResponseWriter, request *http.Request) 
 		http.Error(response, "Les journaux n’ont pas pu être chargés.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(ctx, user.ID)
 	lines := filterLogLines(snapshot.Lines, logLevel, keyword)
 	lineContent := strings.Join(lines, "\n")
 	if len(lines) == 0 {
-		lineContent = "Aucune ligne ne correspond aux critères de recherche."
+		lineContent = i18n.Text(language, "logs.lines.empty")
 	}
-	results := strconv.Itoa(len(lines)) + " ligne(s) affichée(s) sur les 100 dernières"
+	results := ""
+	if len(lines) == 1 {
+		results = i18n.Text(language, "logs.results.one")
+	} else {
+		results = fmt.Sprintf(i18n.Text(language, "logs.results.many"), len(lines))
+	}
 	page := strings.NewReplacer(
 		"{{CSRF}}", html.EscapeString(session.CSRFToken),
-		"{{PERMISSION}}", html.EscapeString(permissionLabel(level)),
-		"{{SOURCES}}", renderLogSources(snapshot.Sources, snapshot.Selected),
-		"{{LEVELS}}", renderLogLevels(logLevel),
+		"{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)),
+		"{{SOURCES}}", renderLogSources(snapshot.Sources, snapshot.Selected, language),
+		"{{LEVELS}}", renderLogLevels(logLevel, language),
 		"{{KEYWORD}}", html.EscapeString(keyword),
-		"{{SELECTED}}", html.EscapeString(logTitle(snapshot.Selected)),
+		"{{SELECTED}}", html.EscapeString(logTitle(snapshot.Selected, language)),
 		"{{RESET_URL}}", html.EscapeString("/logs?source="+url.QueryEscape(snapshot.Selected)),
 		"{{RESULTS}}", html.EscapeString(results),
 		"{{LINES}}", html.EscapeString(lineContent),
-	).Replace(a.logsPage)
+	).Replace(i18n.Localize(a.logsPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 
-func renderLogLevels(selectedLevel string) string {
-	options := [][2]string{{"", "Tous les événements"}, {"error", "Erreurs"}, {"warning", "Avertissements"}, {"info", "Informations"}}
+func renderLogLevels(selectedLevel, language string) string {
+	options := [][2]string{{"", i18n.Text(language, "logs.level.all")}, {"error", i18n.Text(language, "logs.level.error")}, {"warning", i18n.Text(language, "logs.level.warning")}, {"info", i18n.Text(language, "logs.level.info")}}
 	var result strings.Builder
 	for _, option := range options {
 		result.WriteString(`<option value="` + option[0] + `"`)
@@ -1225,9 +1482,9 @@ func logLineLevel(lowerLine string) string {
 	return ""
 }
 
-func renderLogSources(sources []string, selected string) string {
+func renderLogSources(sources []string, selected, language string) string {
 	if len(sources) == 0 {
-		return `<option value="">Aucun journal disponible</option>`
+		return `<option value="">` + html.EscapeString(i18n.Text(language, "logs.source.empty")) + `</option>`
 	}
 	var result strings.Builder
 	for _, source := range sources {
@@ -1240,9 +1497,9 @@ func renderLogSources(sources []string, selected string) string {
 	return result.String()
 }
 
-func logTitle(selected string) string {
+func logTitle(selected, language string) string {
 	if selected == "" {
-		return "Aucun journal sélectionné"
+		return i18n.Text(language, "logs.selected.empty")
 	}
 	return selected
 }
@@ -1260,7 +1517,15 @@ func (a *application) about(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "Accès interdit.", http.StatusForbidden)
 		return
 	}
-	page := strings.ReplaceAll(a.aboutPage, "{{CSRF}}", html.EscapeString(session.CSRFToken))
+	language := a.languageForUser(request.Context(), user.ID)
+	agplURL := "https://www.gnu.org/licenses/agpl-3.0.html"
+	if language == "fr" {
+		agplURL = "https://www.gnu.org/licenses/agpl-3.0.fr.html"
+	}
+	page := strings.NewReplacer(
+		"{{CSRF}}", html.EscapeString(session.CSRFToken),
+		"{{AGPL_URL}}", agplURL,
+	).Replace(i18n.Localize(a.aboutPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 
@@ -1288,18 +1553,19 @@ func (a *application) php(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, "Les informations PHP n’ont pas pu être chargées.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(ctx, user.ID)
 	canAct := level == "action" || level == "modify"
 	notice := ""
 	if request.URL.Query().Get("result") == "restarted" {
-		notice = `<p class="notice notice--success">Le redémarrage de PHP-FPM a été programmé.</p>`
+		notice = `<p class="notice notice--success">` + html.EscapeString(i18n.Text(language, "php.restarted")) + `</p>`
 	}
 	actionHeader := ""
 	if canAct {
-		actionHeader = "<th>Action</th>"
+		actionHeader = "<th>" + html.EscapeString(i18n.Text(language, "php.action")) + "</th>"
 	}
-	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", notice,
-		"{{CLI_VERSION}}", html.EscapeString(snapshot.CLI.Version), "{{CLI_SAPI}}", html.EscapeString(snapshot.CLI.SAPI), "{{CLI_INI}}", html.EscapeString(snapshot.CLI.IniFile), "{{CLI_SCAN}}", html.EscapeString(snapshot.CLI.ScanDir),
-		"{{ACTION_HEADER}}", actionHeader, "{{INSTANCES}}", renderPHPInstances(snapshot.Instances, session.CSRFToken, canAct)).Replace(a.phpPage)
+	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)), "{{NOTICE}}", notice,
+		"{{CLI_VERSION}}", html.EscapeString(snapshot.CLI.Version), "{{CLI_SAPI}}", html.EscapeString(snapshot.CLI.SAPI), "{{CLI_INI}}", html.EscapeString(localizeUnavailable(snapshot.CLI.IniFile, language)), "{{CLI_SCAN}}", html.EscapeString(localizeUnavailable(snapshot.CLI.ScanDir, language)),
+		"{{ACTION_HEADER}}", actionHeader, "{{INSTANCES}}", renderPHPInstances(snapshot.Instances, session.CSRFToken, canAct, language)).Replace(i18n.Localize(a.phpPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 
@@ -1334,13 +1600,13 @@ func (a *application) restartPHP(response http.ResponseWriter, request *http.Req
 	http.Redirect(response, request, "/php?result=restarted", http.StatusSeeOther)
 }
 
-func renderPHPInstances(instances []webphp.Instance, csrf string, canAct bool) string {
+func renderPHPInstances(instances []webphp.Instance, csrf string, canAct bool, language string) string {
 	columns := 5
 	if canAct {
 		columns++
 	}
 	if len(instances) == 0 {
-		return `<tr><td colspan="` + strconv.Itoa(columns) + `" class="muted">Aucune instance PHP-FPM détectée.</td></tr>`
+		return `<tr><td colspan="` + strconv.Itoa(columns) + `" class="muted">` + html.EscapeString(i18n.Text(language, "php.empty")) + `</td></tr>`
 	}
 	var result strings.Builder
 	for _, item := range instances {
@@ -1348,17 +1614,37 @@ func renderPHPInstances(instances []webphp.Instance, csrf string, canAct bool) s
 		if status != "success" && status != "warning" && status != "danger" {
 			status = "neutral"
 		}
-		result.WriteString(`<tr><th>` + html.EscapeString(item.Version) + `</th><td>` + html.EscapeString(item.Service) + `</td><td><span class="status-badge status-badge--` + status + `">` + html.EscapeString(item.StatusLabel) + `</span></td><td>` + yesNo(item.Enabled) + `</td><td>` + html.EscapeString(item.State) + `</td>`)
+		result.WriteString(`<tr><th>` + html.EscapeString(item.Version) + `</th><td>` + html.EscapeString(item.Service) + `</td><td><span class="status-badge status-badge--` + status + `">` + html.EscapeString(phpStatusLabel(item, language)) + `</span></td><td>` + yesNoForLanguage(item.Enabled, language) + `</td><td>` + html.EscapeString(item.State) + `</td>`)
 		if canAct {
 			result.WriteString(`<td>`)
 			if item.Exists {
-				result.WriteString(`<form class="inline-form" method="post" action="/php/restart"><input type="hidden" name="_token" value="` + html.EscapeString(csrf) + `"><input type="hidden" name="runtime" value="` + html.EscapeString(item.ID) + `"><button class="danger-button" type="submit">Redémarrer</button></form>`)
+				result.WriteString(`<form class="inline-form" method="post" action="/php/restart"><input type="hidden" name="_token" value="` + html.EscapeString(csrf) + `"><input type="hidden" name="runtime" value="` + html.EscapeString(item.ID) + `"><button class="danger-button" type="submit">` + html.EscapeString(i18n.Text(language, "php.restart")) + `</button></form>`)
 			}
 			result.WriteString(`</td>`)
 		}
 		result.WriteString(`</tr>`)
 	}
 	return result.String()
+}
+
+func phpStatusLabel(instance webphp.Instance, language string) string {
+	if !instance.Exists {
+		return i18n.Text(language, "php.status.missing")
+	}
+	if instance.Active {
+		return i18n.Text(language, "php.status.active")
+	}
+	if instance.State == "failed" {
+		return i18n.Text(language, "php.status.failed")
+	}
+	return i18n.Text(language, "php.status.stopped")
+}
+
+func localizeUnavailable(value, language string) string {
+	if strings.TrimSpace(value) == "" || value == "Non disponible" {
+		return i18n.Text(language, "network.unavailable")
+	}
+	return value
 }
 
 func (a *application) mysql(response http.ResponseWriter, request *http.Request) {
@@ -1385,19 +1671,25 @@ func (a *application) mysql(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "Les informations MySQL n’ont pas pu être chargées.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(ctx, user.ID)
+	if !snapshot.Server.Service.Exists {
+		page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)), "{{NOTICE}}", `<p class="notice">`+html.EscapeString(i18n.Text(language, "mysql.not_installed"))+`</p>`, "{{RESTART}}", "", "{{SERVER}}", renderMySQLServer(snapshot.Server, language), "{{METRICS_HOOK}}", "", "{{METRICS}}", renderMySQLMetrics(snapshot.Metrics, language), "{{DATABASES}}", renderMySQLDatabases(nil, language)).Replace(i18n.Localize(a.mysqlPage, language))
+		writeHTML(response, page, http.StatusOK)
+		return
+	}
 	canAct := level == "action" || level == "modify"
 	restart := ""
 	if canAct && snapshot.Server.Service.Exists {
-		restart = `<form method="post" action="/mysql/restart"><input type="hidden" name="_token" value="` + html.EscapeString(session.CSRFToken) + `"><button class="danger-button" type="submit">Redémarrer ` + html.EscapeString(snapshot.Server.Product) + `</button></form>`
+		restart = `<form method="post" action="/mysql/restart"><input type="hidden" name="_token" value="` + html.EscapeString(session.CSRFToken) + `"><button class="danger-button" type="submit">` + html.EscapeString(i18n.Text(language, "mysql.restart")) + ` ` + html.EscapeString(snapshot.Server.Product) + `</button></form>`
 	}
 	notice := ""
 	if request.URL.Query().Get("result") == "restarted" {
-		notice = `<p class="notice notice--success">Le redémarrage du serveur de bases de données a été programmé.</p>`
+		notice = `<p class="notice notice--success">` + html.EscapeString(i18n.Text(language, "mysql.restarted")) + `</p>`
 	}
 	for _, warning := range snapshot.Warnings {
-		notice += `<p class="notice notice--warning">` + html.EscapeString(warning) + `</p>`
+		notice += `<p class="notice notice--warning">` + html.EscapeString(localizeMySQLWarning(warning, language)) + `</p>`
 	}
-	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", notice, "{{RESTART}}", restart, "{{SERVER}}", renderMySQLServer(snapshot.Server), "{{METRICS}}", renderMySQLMetrics(snapshot.Metrics), "{{DATABASES}}", renderMySQLDatabases(snapshot.Databases)).Replace(a.mysqlPage)
+	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)), "{{NOTICE}}", notice, "{{RESTART}}", restart, "{{SERVER}}", renderMySQLServer(snapshot.Server, language), "{{METRICS_HOOK}}", ` data-mysql-metrics data-mysql-metrics-url="/mysql/metrics" data-mysql-metrics-interval="2000"`, "{{METRICS}}", renderMySQLMetrics(snapshot.Metrics, language), "{{DATABASES}}", renderMySQLDatabases(snapshot.Databases, language)).Replace(i18n.Localize(a.mysqlPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 func (a *application) restartMySQL(response http.ResponseWriter, request *http.Request) {
@@ -1448,39 +1740,39 @@ func (a *application) mysqlMetrics(response http.ResponseWriter, request *http.R
 	}
 	writeJSON(response, metrics, http.StatusOK)
 }
-func renderMySQLServer(s webmysql.Server) string {
+func renderMySQLServer(s webmysql.Server, language string) string {
 	available := func(value string) string {
 		if strings.TrimSpace(value) == "" {
-			return "Indisponible"
+			return i18n.Text(language, "mysql.unavailable")
 		}
 		return value
 	}
-	unit := "Non détecté"
+	unit := i18n.Text(language, "mysql.not_detected")
 	if s.Service.Unit != nil {
 		unit = *s.Service.Unit
 	}
 	version := available(strings.TrimSpace(s.Product + " " + s.Version))
-	port := "Indisponible"
+	port := i18n.Text(language, "mysql.unavailable")
 	if s.Port > 0 {
 		port = strconv.FormatInt(s.Port, 10)
 	}
-	rows := [][2]string{{"Version", version}, {"Nom d’hôte", available(s.Hostname)}, {"Port", port}, {"Socket", available(s.Socket)}, {"Répertoire des données", available(s.DataDirectory)}, {"Moteur par défaut", available(s.DefaultStorageEngine)}, {"Service", unit}, {"Démarrage automatique", yesNo(s.Service.Enabled)}, {"État du service", available(s.Service.State)}}
+	rows := [][2]string{{i18n.Text(language, "mysql.version"), version}, {i18n.Text(language, "mysql.hostname"), available(s.Hostname)}, {i18n.Text(language, "mysql.port"), port}, {i18n.Text(language, "mysql.socket"), available(s.Socket)}, {i18n.Text(language, "mysql.data_directory"), available(s.DataDirectory)}, {i18n.Text(language, "mysql.default_engine"), available(s.DefaultStorageEngine)}, {i18n.Text(language, "mysql.service"), unit}, {i18n.Text(language, "mysql.autostart"), yesNoForLanguage(s.Service.Enabled, language)}, {i18n.Text(language, "mysql.service_state"), available(s.Service.State)}}
 	var b strings.Builder
 	for _, r := range rows {
 		b.WriteString(`<div><dt>` + r[0] + `</dt><dd>` + html.EscapeString(r[1]) + `</dd></div>`)
 	}
 	return b.String()
 }
-func renderMySQLMetrics(m map[string]int64) string {
+func renderMySQLMetrics(m map[string]int64, language string) string {
 	metric := func(key string, format func(int64) string) string {
 		value, found := m[key]
 		if !found {
-			return "Indisponible"
+			return i18n.Text(language, "mysql.unavailable")
 		}
 		return format(value)
 	}
 	decimal := func(value int64) string { return strconv.FormatInt(value, 10) }
-	items := [][2]string{{"Connexions actives", metric("threads_connected", decimal)}, {"Threads actifs", metric("threads_running", decimal)}, {"Requêtes", metric("queries", formatFrenchInteger)}, {"Requêtes lentes", metric("slow_queries", decimal)}}
+	items := [][2]string{{i18n.Text(language, "mysql.connections"), metric("threads_connected", decimal)}, {i18n.Text(language, "mysql.threads"), metric("threads_running", decimal)}, {i18n.Text(language, "mysql.queries"), metric("queries", func(value int64) string { return formatIntegerForLanguage(value, language) })}, {i18n.Text(language, "mysql.slow_queries"), metric("slow_queries", decimal)}}
 	var b strings.Builder
 	keys := []string{"threads_connected", "threads_running", "queries", "slow_queries"}
 	for index, i := range items {
@@ -1499,13 +1791,32 @@ func formatFrenchInteger(value int64) string {
 	}
 	return digits
 }
-func renderMySQLDatabases(items []webmysql.Database) string {
+
+func formatIntegerForLanguage(value int64, language string) string {
+	if language != "en" {
+		return formatFrenchInteger(value)
+	}
+	digits := strconv.FormatInt(value, 10)
+	start := 0
+	if strings.HasPrefix(digits, "-") {
+		start = 1
+	}
+	for position := len(digits) - 3; position > start; position -= 3 {
+		digits = digits[:position] + "," + digits[position:]
+	}
+	return digits
+}
+func renderMySQLDatabases(items []webmysql.Database, language string) string {
 	if len(items) == 0 {
-		return `<tr><td colspan="4" class="muted">Aucune base détectée.</td></tr>`
+		return `<tr><td colspan="4" class="muted">` + html.EscapeString(i18n.Text(language, "mysql.empty")) + `</td></tr>`
 	}
 	var b strings.Builder
 	for _, i := range items {
-		b.WriteString(`<tr><th data-sort-value="` + html.EscapeString(strings.ToLower(i.Name)) + `">` + html.EscapeString(i.Name) + `</th><td data-sort-value="` + html.EscapeString(strings.ToLower(i.Kind)) + `">` + html.EscapeString(i.Kind) + `</td><td data-sort-value="` + strconv.FormatInt(i.Tables, 10) + `">` + strconv.FormatInt(i.Tables, 10) + `</td><td data-sort-value="` + strconv.FormatInt(i.Size, 10) + `">` + formatByteCount(i.Size) + `</td></tr>`)
+		kind := i.Kind
+		if i.Kind == "user" || i.Kind == "system" {
+			kind = i18n.Text(language, "mysql.kind."+i.Kind)
+		}
+		b.WriteString(`<tr><th data-sort-value="` + html.EscapeString(strings.ToLower(i.Name)) + `">` + html.EscapeString(i.Name) + `</th><td data-sort-value="` + html.EscapeString(strings.ToLower(i.Kind)) + `">` + html.EscapeString(kind) + `</td><td data-sort-value="` + strconv.FormatInt(i.Tables, 10) + `">` + formatIntegerForLanguage(i.Tables, language) + `</td><td data-sort-value="` + strconv.FormatInt(i.Size, 10) + `">` + formatByteCountForLanguage(i.Size, language) + `</td></tr>`)
 	}
 	return b.String()
 }
@@ -1518,6 +1829,31 @@ func formatByteCount(value int64) string {
 		unit++
 	}
 	return strings.ReplaceAll(strconv.FormatFloat(amount, 'f', 1, 64), ".", ",") + " " + units[unit]
+}
+
+func formatByteCountForLanguage(value int64, language string) string {
+	if language != "en" {
+		return formatByteCount(value)
+	}
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
+	amount, unit := float64(value), 0
+	for amount >= 1024 && unit < len(units)-1 {
+		amount /= 1024
+		unit++
+	}
+	return strconv.FormatFloat(amount, 'f', 1, 64) + " " + units[unit]
+}
+
+func localizeMySQLWarning(warning, language string) string {
+	keys := map[string]string{
+		"Le service est détecté, mais la connexion locale à MySQL/MariaDB a été refusée. Vérifiez l’authentification du client système.": "mysql.warning.login",
+		"Les métriques MySQL ne sont pas disponibles.":         "mysql.warning.metrics",
+		"La liste des bases MySQL ne peut pas être consultée.": "mysql.warning.databases",
+	}
+	if key := keys[warning]; key != "" {
+		return i18n.Text(language, key)
+	}
+	return warning
 }
 
 func (a *application) tor(response http.ResponseWriter, request *http.Request) {
@@ -1544,34 +1880,40 @@ func (a *application) tor(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, "Les informations Tor n’ont pas pu être chargées.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(ctx, user.ID)
 	if !s.Installed {
-		info := renderPairs([][2]string{{"État", "Tor n’est pas installé sur ce serveur."}})
-		config := `<span class="status-badge status-badge--neutral">Indisponible</span><p>Installez Tor pour accéder à sa configuration.</p>`
-		status := renderMetricPairs([][2]string{{"Amorçage", "Indisponible"}, {"Mémoire", "Indisponible"}, {"Tâches", "Indisponible"}, {"PID principal", "Indisponible"}})
-		page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", `<p class="notice">Le module reste disponible, mais Tor n’est pas installé sur ce serveur.</p>`, "{{INFO}}", info, "{{CONFIG}}", config, "{{ACTIONS}}", "", "{{INSTANCE_TITLE}}", "Service Tor", "{{STATUS}}", status, "{{ONIONS}}", renderOnions(nil)).Replace(a.torPage)
+		unavailable := i18n.Text(language, "tor.unavailable")
+		info := renderPairs([][2]string{{i18n.Text(language, "tor.state"), i18n.Text(language, "tor.not_installed")}})
+		config := `<span class="status-badge status-badge--neutral">` + html.EscapeString(unavailable) + `</span><p>` + html.EscapeString(i18n.Text(language, "tor.install_help")) + `</p>`
+		status := renderMetricPairs([][2]string{{i18n.Text(language, "tor.bootstrap"), unavailable}, {i18n.Text(language, "tor.memory"), unavailable}, {i18n.Text(language, "tor.tasks"), unavailable}, {i18n.Text(language, "tor.main_pid"), unavailable}})
+		page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)), "{{NOTICE}}", `<p class="notice">`+html.EscapeString(i18n.Text(language, "tor.module_available"))+`</p>`, "{{INFO}}", info, "{{CONFIG}}", config, "{{ACTIONS}}", "", "{{INSTANCE_TITLE}}", html.EscapeString(i18n.Text(language, "tor.service")), "{{STATUS}}", status, "{{ONIONS}}", renderOnions(nil, language)).Replace(i18n.Localize(a.torPage, language))
 		writeHTML(response, page, http.StatusOK)
 		return
 	}
 	canAct := level == "action" || level == "modify"
 	actions := ""
 	if canAct && s.Status.Exists {
-		actions = `<div class="header-actions"><form method="post" action="/tor/reload"><input type="hidden" name="_token" value="` + html.EscapeString(session.CSRFToken) + `"><button class="primary-button" type="submit">Recharger Tor</button></form><form method="post" action="/tor/restart"><input type="hidden" name="_token" value="` + html.EscapeString(session.CSRFToken) + `"><button class="danger-button" type="submit">Redémarrer Tor</button></form></div>`
+		actions = `<div class="header-actions"><form method="post" action="/tor/reload"><input type="hidden" name="_token" value="` + html.EscapeString(session.CSRFToken) + `"><button class="primary-button" type="submit">` + html.EscapeString(i18n.Text(language, "tor.reload")) + `</button></form><form method="post" action="/tor/restart"><input type="hidden" name="_token" value="` + html.EscapeString(session.CSRFToken) + `"><button class="danger-button" type="submit">` + html.EscapeString(i18n.Text(language, "tor.restart")) + `</button></form></div>`
 	}
 	notice := ""
 	if result := request.URL.Query().Get("result"); result == "reload" || result == "restart" {
-		notice = `<p class="notice notice--success">L’action Tor a été exécutée.</p>`
+		notice = `<p class="notice notice--success">` + html.EscapeString(i18n.Text(language, "tor.action_done")) + `</p>`
 	}
-	config := `<span class="status-badge status-badge--danger">Invalide</span>`
+	config := `<span class="status-badge status-badge--danger">` + html.EscapeString(i18n.Text(language, "tor.invalid")) + `</span>`
 	if s.ConfigurationValid {
-		config = `<span class="status-badge status-badge--success">Valide</span><p>` + html.EscapeString(s.ConfigurationMessage) + `</p>`
+		message := s.ConfigurationMessage
+		if message == "La configuration de Tor est valide." || message == "Configuration valide" {
+			message = i18n.Text(language, "tor.config_valid_message")
+		}
+		config = `<span class="status-badge status-badge--success">` + html.EscapeString(i18n.Text(language, "tor.valid")) + `</span><p>` + html.EscapeString(message) + `</p>`
 	}
-	bootstrap := "Indisponible"
+	bootstrap := i18n.Text(language, "tor.unavailable")
 	if s.Status.Bootstrap != nil {
 		bootstrap = strconv.Itoa(*s.Status.Bootstrap) + " %"
 	}
-	info := renderPairs([][2]string{{"Version", s.Info.Product + " " + s.Info.Version}, {"Configuration", s.Info.ConfigFile}, {"Service", s.Info.Service}, {"Unité", s.Info.Unit}})
-	status := renderMetricPairs([][2]string{{"Amorçage", bootstrap}, {"Mémoire", formatByteCount(s.Status.Memory)}, {"Tâches", strconv.FormatInt(s.Status.Tasks, 10)}, {"PID principal", strconv.FormatInt(s.Status.MainPID, 10)}})
-	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", notice, "{{INFO}}", info, "{{CONFIG}}", config, "{{ACTIONS}}", actions, "{{INSTANCE_TITLE}}", "Instance "+html.EscapeString(s.Info.Service), "{{STATUS}}", status, "{{ONIONS}}", renderOnions(s.Services)).Replace(a.torPage)
+	info := renderPairs([][2]string{{i18n.Text(language, "tor.version"), s.Info.Product + " " + s.Info.Version}, {i18n.Text(language, "tor.configuration"), s.Info.ConfigFile}, {i18n.Text(language, "tor.service"), s.Info.Service}, {i18n.Text(language, "tor.unit"), s.Info.Unit}})
+	status := renderMetricPairs([][2]string{{i18n.Text(language, "tor.bootstrap"), bootstrap}, {i18n.Text(language, "tor.memory"), formatByteCountForLanguage(s.Status.Memory, language)}, {i18n.Text(language, "tor.tasks"), formatIntegerForLanguage(s.Status.Tasks, language)}, {i18n.Text(language, "tor.main_pid"), strconv.FormatInt(s.Status.MainPID, 10)}})
+	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)), "{{NOTICE}}", notice, "{{INFO}}", info, "{{CONFIG}}", config, "{{ACTIONS}}", actions, "{{INSTANCE_TITLE}}", html.EscapeString(i18n.Text(language, "tor.instance"))+" "+html.EscapeString(s.Info.Service), "{{STATUS}}", status, "{{ONIONS}}", renderOnions(s.Services, language)).Replace(i18n.Localize(a.torPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 func (a *application) torAction(response http.ResponseWriter, request *http.Request) {
@@ -1619,13 +1961,13 @@ func renderMetricPairs(rows [][2]string) string {
 	}
 	return b.String()
 }
-func renderOnions(items []webtor.Onion) string {
+func renderOnions(items []webtor.Onion, language string) string {
 	if len(items) == 0 {
-		return `<tr><td colspan="3" class="muted">Aucun service Onion détecté.</td></tr>`
+		return `<tr><td colspan="3" class="muted">` + html.EscapeString(i18n.Text(language, "tor.empty")) + `</td></tr>`
 	}
 	var b strings.Builder
 	for _, i := range items {
-		host := "Non disponible"
+		host := i18n.Text(language, "tor.address_unavailable")
 		if i.Hostname != nil {
 			host = *i.Hostname
 		}
@@ -1658,8 +2000,9 @@ func (a *application) apache(response http.ResponseWriter, request *http.Request
 		http.Error(response, "Les informations Apache n’ont pas pu être chargées.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(ctx, user.ID)
 	if !s.Installed && s.Version == "" {
-		page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", `<p class="notice">Apache n’est pas installé sur ce serveur. AegisAdmin utilise directement son serveur HTTPS Go.</p>`, "{{INFO}}", renderPairs([][2]string{{"Installation", "Non installé"}}), "{{CONFIG}}", `<span class="status-badge status-badge--neutral">Indisponible</span><p>Installez Apache pour gérer ses VirtualHosts.</p>`, "{{ACTIONS}}", "", "{{SUMMARY}}", renderMetricPairs([][2]string{{"VirtualHosts", "0"}, {"Sites", "0"}, {"Modules", "0"}, {"Sites actifs", "0"}}), "{{VHOSTS}}", renderVHosts(nil), "{{SITE_ACTIONS}}", renderApacheSites(nil, session.CSRFToken, false), "{{CREATE_SITE}}", "").Replace(a.apachePage)
+		page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)), "{{NOTICE}}", `<p class="notice">`+html.EscapeString(i18n.Text(language, "apache.not_installed_notice"))+`</p>`, "{{INFO}}", renderPairs([][2]string{{i18n.Text(language, "apache.installation"), i18n.Text(language, "apache.not_installed")}}), "{{CONFIG}}", `<span class="status-badge status-badge--neutral">`+html.EscapeString(i18n.Text(language, "apache.unavailable"))+`</span><p>`+html.EscapeString(i18n.Text(language, "apache.install_help"))+`</p>`, "{{ACTIONS}}", "", "{{SUMMARY}}", renderMetricPairs([][2]string{{i18n.Text(language, "apache.vhosts"), "0"}, {i18n.Text(language, "apache.sites"), "0"}, {i18n.Text(language, "apache.modules"), "0"}, {i18n.Text(language, "apache.active_sites"), "0"}}), "{{VHOSTS}}", renderVHosts(nil, language), "{{SITE_ACTIONS}}", renderApacheSites(nil, session.CSRFToken, false, language), "{{CREATE_SITE}}", "").Replace(i18n.Localize(a.apachePage, language))
 		writeHTML(response, page, http.StatusOK)
 		return
 	}
@@ -1668,25 +2011,25 @@ func (a *application) apache(response http.ResponseWriter, request *http.Request
 	actions := ""
 	if canAct {
 		token := html.EscapeString(session.CSRFToken)
-		actions = `<div class="header-actions"><form method="post" action="/apache/reload"><input type="hidden" name="_token" value="` + token + `"><button class="primary-button" type="submit">Recharger Apache</button></form><form method="post" action="/apache/restart"><input type="hidden" name="_token" value="` + token + `"><button class="danger-button" type="submit">Redémarrer Apache</button></form></div>`
+		actions = `<div class="header-actions"><form method="post" action="/apache/reload"><input type="hidden" name="_token" value="` + token + `"><button class="primary-button" type="submit">` + html.EscapeString(i18n.Text(language, "apache.reload")) + `</button></form><form method="post" action="/apache/restart"><input type="hidden" name="_token" value="` + token + `"><button class="danger-button" type="submit">` + html.EscapeString(i18n.Text(language, "apache.restart")) + `</button></form></div>`
 	}
 	configClass := "danger"
-	configLabel := "Invalide"
+	configLabel := i18n.Text(language, "apache.invalid")
 	if s.ConfigValid {
 		configClass = "success"
-		configLabel = "Valide"
+		configLabel = i18n.Text(language, "apache.valid")
 	}
 	config := `<span class="status-badge status-badge--` + configClass + `">` + configLabel + `</span><p>` + html.EscapeString(s.ConfigMessage) + `</p>`
 	notice := ""
 	if action := request.URL.Query().Get("result"); action == "reload" || action == "restart" {
-		notice = `<p class="notice notice--success">L’action Apache a été exécutée.</p>`
+		notice = `<p class="notice notice--success">` + html.EscapeString(i18n.Text(language, "apache.action_done")) + `</p>`
 	} else if action != "" {
-		notice = `<p class="notice notice--success">L’opération Apache a été exécutée.</p>`
+		notice = `<p class="notice notice--success">` + html.EscapeString(i18n.Text(language, "apache.operation_done")) + `</p>`
 	} else if message := request.URL.Query().Get("error"); message != "" {
 		notice = `<p class="notice notice--danger">` + html.EscapeString(message) + `</p>`
 	}
-	summary := renderMetricPairs([][2]string{{"VirtualHosts", strconv.Itoa(len(s.VHosts))}, {"Sites", strconv.Itoa(len(s.Sites))}, {"Modules", strconv.Itoa(len(s.Modules))}, {"Sites actifs", strconv.Itoa(enabledSites(s.Sites))}})
-	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", notice, "{{INFO}}", renderPairs([][2]string{{"Version", s.Version}, {"Compilation", s.Built}}), "{{CONFIG}}", config, "{{ACTIONS}}", actions, "{{SUMMARY}}", summary, "{{VHOSTS}}", renderVHosts(s.VHosts), "{{SITE_ACTIONS}}", renderApacheSites(s.Sites, session.CSRFToken, canModify), "{{CREATE_SITE}}", renderApacheCreate(session.CSRFToken, canModify)).Replace(a.apachePage)
+	summary := renderMetricPairs([][2]string{{i18n.Text(language, "apache.vhosts"), strconv.Itoa(len(s.VHosts))}, {i18n.Text(language, "apache.sites"), strconv.Itoa(len(s.Sites))}, {i18n.Text(language, "apache.modules"), strconv.Itoa(len(s.Modules))}, {i18n.Text(language, "apache.active_sites"), strconv.Itoa(enabledSites(s.Sites))}})
+	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)), "{{NOTICE}}", notice, "{{INFO}}", renderPairs([][2]string{{i18n.Text(language, "apache.version"), s.Version}, {i18n.Text(language, "apache.build"), s.Built}}), "{{CONFIG}}", config, "{{ACTIONS}}", actions, "{{SUMMARY}}", summary, "{{VHOSTS}}", renderVHosts(s.VHosts, language), "{{SITE_ACTIONS}}", renderApacheSites(s.Sites, session.CSRFToken, canModify, language), "{{CREATE_SITE}}", renderApacheCreate(session.CSRFToken, canModify, language)).Replace(i18n.Localize(a.apachePage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 
@@ -1864,54 +2207,55 @@ func apacheSiteConfiguration(form url.Values) (string, string, error) {
 	return filename, b.String(), nil
 }
 
-func renderApacheSites(items []webapache.Site, token string, canModify bool) string {
+func renderApacheSites(items []webapache.Site, token string, canModify bool, language string) string {
 	if len(items) == 0 {
-		return `<tr><td colspan="6" class="muted">Aucun site Apache détecté.</td></tr>`
+		return `<tr><td colspan="6" class="muted">` + html.EscapeString(i18n.Text(language, "apache.empty_sites")) + `</td></tr>`
 	}
 	var b strings.Builder
 	for _, site := range items {
-		state, stateClass := "Désactivé", "muted"
+		state, stateClass := i18n.Text(language, "apache.disabled"), "muted"
 		if site.Enabled {
-			state, stateClass = "Activé", "success"
+			state, stateClass = i18n.Text(language, "apache.enabled"), "success"
 		}
-		actions := `<span class="muted">Lecture seule</span>`
+		actions := `<span class="muted">` + html.EscapeString(i18n.Text(language, "apache.read_only")) + `</span>`
 		if canModify {
-			actions = `<select class="compact-select" aria-label="Action pour ` + html.EscapeString(site.Filename) + `" data-apache-site-action data-config-id="` + html.EscapeString(site.ConfigID) + `" data-filename="` + html.EscapeString(site.Filename) + `" data-domains="` + html.EscapeString(strings.Join(site.ServerNames, " ")) + `" data-csrf="` + html.EscapeString(token) + `"><option value="">Actions…</option><option value="edit">Modifier</option>`
+			actions = `<select class="compact-select" aria-label="` + html.EscapeString(i18n.Text(language, "apache.action_for")) + ` ` + html.EscapeString(site.Filename) + `" data-apache-site-action data-config-id="` + html.EscapeString(site.ConfigID) + `" data-filename="` + html.EscapeString(site.Filename) + `" data-domains="` + html.EscapeString(strings.Join(site.ServerNames, " ")) + `" data-csrf="` + html.EscapeString(token) + `"><option value="">` + html.EscapeString(i18n.Text(language, "apache.action_menu")) + `</option><option value="edit">` + html.EscapeString(i18n.Text(language, "apache.edit")) + `</option>`
 			if site.Enabled {
-				actions += `<option value="disable">Désactiver</option>`
+				actions += `<option value="disable">` + html.EscapeString(i18n.Text(language, "apache.disable")) + `</option>`
 			} else {
-				actions += `<option value="enable">Activer</option>`
+				actions += `<option value="enable">` + html.EscapeString(i18n.Text(language, "apache.enable")) + `</option>`
 			}
 			if len(site.ServerNames) > 0 {
-				actions += `<option value="certificate">Créer un certificat TLS</option>`
+				actions += `<option value="certificate">` + html.EscapeString(i18n.Text(language, "apache.certificate")) + `</option>`
 			}
-			actions += `<option value="delete">Supprimer</option></select>`
+			actions += `<option value="delete">` + html.EscapeString(i18n.Text(language, "apache.delete")) + `</option></select>`
 		}
 		ports := make([]string, len(site.Ports))
 		for i, port := range site.Ports {
 			ports[i] = strconv.Itoa(port)
 		}
-		b.WriteString(`<tr><td>` + actions + `</td><th>` + html.EscapeString(site.Filename) + `</th><td><span class="status-badge status-badge--` + stateClass + `">` + state + `</span></td><td>` + html.EscapeString(strings.Join(site.ServerNames, ", ")) + `</td><td>` + html.EscapeString(strings.Join(ports, ", ")) + `</td><td>` + strconv.FormatInt(site.Size, 10) + ` octets</td></tr>`)
+		b.WriteString(`<tr><td>` + actions + `</td><th>` + html.EscapeString(site.Filename) + `</th><td><span class="status-badge status-badge--` + stateClass + `">` + state + `</span></td><td>` + html.EscapeString(strings.Join(site.ServerNames, ", ")) + `</td><td>` + html.EscapeString(strings.Join(ports, ", ")) + `</td><td>` + formatIntegerForLanguage(site.Size, language) + ` ` + html.EscapeString(i18n.Text(language, "apache.bytes")) + `</td></tr>`)
 	}
 	return b.String()
 }
 
-func renderApacheCreate(token string, canModify bool) string {
+func renderApacheCreate(token string, canModify bool, language string) string {
 	if !canModify {
 		return ""
 	}
-	return `<button class="primary-button" type="button" data-apache-create-open>Ajouter un site</button>
-<dialog class="action-dialog action-dialog--wide" data-apache-create-dialog><form method="post" action="/apache/create"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><h2>Ajouter un site Apache</h2><label>Type<select name="site_type" data-apache-site-type><option value="website">Site web</option><option value="proxy">Proxy inverse</option></select></label><label>Nom de domaine<input name="server_name" required placeholder="example.org"></label><label>Alias de domaine<input name="aliases" placeholder="www.example.org"></label><fieldset data-apache-website-fields><label>DocumentRoot<input name="document_root" value="/var/www/" required></label><label>AllowOverride<select name="allow_override"><option value="None">None</option><option value="All">All</option></select></label><label class="check-row"><input type="checkbox" name="follow_sym_links" value="1" checked> Autoriser FollowSymLinks</label></fieldset><fieldset data-apache-proxy-fields hidden><label>URL cible<input type="url" name="target_url" placeholder="http://127.0.0.1:3000"></label></fieldset><div class="dialog-actions"><button class="secondary-button" type="button" data-apache-create-close>Annuler</button><button class="primary-button" type="submit">Créer et valider</button></div></form></dialog>
-<dialog class="action-dialog action-dialog--wide" data-apache-edit-dialog><form method="post" action="/apache/update"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input type="hidden" name="config_id"><h2>Modifier le VirtualHost</h2><p class="muted" data-apache-edit-filename></p><label>Configuration<textarea name="content" rows="20" required spellcheck="false"></textarea></label><div class="dialog-actions"><button class="secondary-button" type="button" data-apache-edit-close>Annuler</button><button class="primary-button" type="submit">Valider et enregistrer</button></div></form></dialog>
-<dialog class="action-dialog" data-apache-certificate-dialog><form method="post" action="/apache/issue-certificate"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><h2>Créer un certificat TLS</h2><label>Domaines<input name="domains" required></label><label>Adresse e-mail<input type="email" name="email" required></label><label class="check-row"><input type="checkbox" name="redirect" value="1" checked> Rediriger HTTP vers HTTPS</label><div class="dialog-actions"><button class="secondary-button" type="button" data-apache-certificate-close>Annuler</button><button class="primary-button" type="submit">Lancer Certbot</button></div></form></dialog>`
+	t := func(key string) string { return html.EscapeString(i18n.Text(language, key)) }
+	return `<button class="primary-button" type="button" data-apache-create-open>` + t("apache.add_site") + `</button>
+<dialog class="action-dialog action-dialog--wide" data-apache-create-dialog><form method="post" action="/apache/create"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><h2>` + t("apache.add_site_title") + `</h2><label>` + t("apache.site_type") + `<select name="site_type" data-apache-site-type><option value="website">` + t("apache.website") + `</option><option value="proxy">` + t("apache.reverse_proxy") + `</option></select></label><label>` + t("apache.domain_name") + `<input name="server_name" required placeholder="example.org"></label><label>` + t("apache.domain_aliases") + `<input name="aliases" placeholder="www.example.org"></label><fieldset data-apache-website-fields><label>DocumentRoot<input name="document_root" value="/var/www/" required></label><label>AllowOverride<select name="allow_override"><option value="None">None</option><option value="All">All</option></select></label><label class="check-row"><input type="checkbox" name="follow_sym_links" value="1" checked> ` + t("apache.follow_symlinks") + `</label></fieldset><fieldset data-apache-proxy-fields hidden><label>` + t("apache.target_url") + `<input type="url" name="target_url" placeholder="http://127.0.0.1:3000"></label></fieldset><div class="dialog-actions"><button class="secondary-button" type="button" data-apache-create-close>` + t("apache.cancel") + `</button><button class="primary-button" type="submit">` + t("apache.create_validate") + `</button></div></form></dialog>
+<dialog class="action-dialog action-dialog--wide" data-apache-edit-dialog><form method="post" action="/apache/update"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input type="hidden" name="config_id"><h2>` + t("apache.edit_vhost") + `</h2><p class="muted" data-apache-edit-filename></p><label>` + t("apache.configuration") + `<textarea name="content" rows="20" required spellcheck="false"></textarea></label><div class="dialog-actions"><button class="secondary-button" type="button" data-apache-edit-close>` + t("apache.cancel") + `</button><button class="primary-button" type="submit">` + t("apache.save_validate") + `</button></div></form></dialog>
+<dialog class="action-dialog" data-apache-certificate-dialog><form method="post" action="/apache/issue-certificate"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><h2>` + t("apache.certificate") + `</h2><label>` + t("apache.domains") + `<input name="domains" required></label><label>` + t("apache.email") + `<input type="email" name="email" required></label><label class="check-row"><input type="checkbox" name="redirect" value="1" checked> ` + t("apache.redirect_https") + `</label><div class="dialog-actions"><button class="secondary-button" type="button" data-apache-certificate-close>` + t("apache.cancel") + `</button><button class="primary-button" type="submit">` + t("apache.run_certbot") + `</button></div></form></dialog>`
 }
-func renderVHosts(items []webapache.VHost) string {
+func renderVHosts(items []webapache.VHost, language string) string {
 	if len(items) == 0 {
-		return `<tr><td colspan="4" class="muted">Aucun VirtualHost détecté.</td></tr>`
+		return `<tr><td colspan="4" class="muted">` + html.EscapeString(i18n.Text(language, "apache.empty_vhosts")) + `</td></tr>`
 	}
 	var b strings.Builder
 	for _, i := range items {
-		root := "Non défini"
+		root := i18n.Text(language, "apache.root_undefined")
 		if i.DocumentRoot != nil {
 			root = *i.DocumentRoot
 		}
@@ -1933,6 +2277,7 @@ func (a *application) fail2ban(response http.ResponseWriter, request *http.Reque
 		http.Error(response, "Accès interdit.", http.StatusForbidden)
 		return
 	}
+	language := a.languageForUser(request.Context(), user.ID)
 	if a.dependencies.Fail2ban == nil {
 		http.Error(response, "Service Fail2ban indisponible.", http.StatusServiceUnavailable)
 		return
@@ -1946,25 +2291,36 @@ func (a *application) fail2ban(response http.ResponseWriter, request *http.Reque
 	}
 	token := html.EscapeString(session.CSRFToken)
 	if !s.Installed {
-		page := strings.NewReplacer("{{CSRF}}", token, "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", `<p class="notice">Le module reste disponible, mais Fail2ban n’est pas installé sur ce serveur.</p>`, "{{INFO}}", renderPairs([][2]string{{"État", "Fail2ban n’est pas installé sur ce serveur."}, {"Démarrage automatique", "Non"}, {"Prisons", "0"}}), "{{SERVICE_ACTIONS}}", "", "{{CONFIG}}", `<span class="status-badge status-badge--neutral">Indisponible</span><p>Installez Fail2ban pour accéder à sa configuration.</p>`, "{{JAIL_SELECTOR}}", renderJailSelector(nil, ""), "{{JAIL}}", "", "{{MODIFY_ACTIONS}}", "").Replace(a.fail2banPage)
+		page := strings.NewReplacer("{{CSRF}}", token, "{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)), "{{NOTICE}}", `<p class="notice">`+html.EscapeString(i18n.Text(language, "fail2ban.not_installed_notice"))+`</p>`, "{{INFO}}", renderPairs([][2]string{{i18n.Text(language, "common.status"), i18n.Text(language, "fail2ban.not_installed")}, {i18n.Text(language, "fail2ban.autostart"), i18n.Text(language, "common.no")}, {i18n.Text(language, "fail2ban.jails"), "0"}}), "{{SERVICE_ACTIONS}}", "", "{{CONFIG}}", `<span class="status-badge status-badge--neutral">`+html.EscapeString(i18n.Text(language, "fail2ban.unavailable"))+`</span><p>`+html.EscapeString(i18n.Text(language, "fail2ban.install_help"))+`</p>`, "{{JAIL_SELECTOR}}", renderJailSelector(nil, "", language), "{{JAIL}}", "", "{{MODIFY_ACTIONS}}", "").Replace(i18n.Localize(a.fail2banPage, language))
 		writeHTML(response, page, http.StatusOK)
 		return
 	}
 	serviceActions := ""
 	if level == "action" || level == "modify" {
-		serviceActions = `<div class="header-actions"><form method="post" action="/fail2ban/reload"><input type="hidden" name="_token" value="` + token + `"><button class="primary-button">Recharger</button></form><form method="post" action="/fail2ban/restart"><input type="hidden" name="_token" value="` + token + `"><button class="danger-button">Redémarrer</button></form></div>`
+		serviceActions = `<div class="header-actions"><form method="post" action="/fail2ban/reload"><input type="hidden" name="_token" value="` + token + `"><button class="primary-button">` + html.EscapeString(i18n.Text(language, "common.reload")) + `</button></form><form method="post" action="/fail2ban/restart"><input type="hidden" name="_token" value="` + token + `"><button class="danger-button">` + html.EscapeString(i18n.Text(language, "common.restart")) + `</button></form></div>`
 	}
-	selector := renderJailSelector(s.Status.Jails, s.Selected)
-	jail, modify := renderJail(s, token, level == "modify")
+	selector := renderJailSelector(s.Status.Jails, s.Selected, language)
+	jail, modify := renderJail(s, token, level == "modify", language)
 	configClass := "danger"
 	if s.ConfigValid {
 		configClass = "success"
 	}
 	notice := ""
 	if request.URL.Query().Get("result") != "" {
-		notice = `<p class="notice notice--success">L’action Fail2ban a été exécutée.</p>`
+		notice = `<p class="notice notice--success">` + html.EscapeString(i18n.Text(language, "fail2ban.action_done")) + `</p>`
 	}
-	page := strings.NewReplacer("{{CSRF}}", token, "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", notice, "{{INFO}}", renderPairs([][2]string{{"Version", s.Info.Product + " " + s.Info.Version}, {"État", s.Status.State}, {"Démarrage automatique", yesNo(s.Status.Enabled)}, {"Prisons", strconv.Itoa(len(s.Status.Jails))}}), "{{SERVICE_ACTIONS}}", serviceActions, "{{CONFIG}}", `<span class="status-badge status-badge--`+configClass+`">`+html.EscapeString(s.ConfigMessage)+`</span>`, "{{JAIL_SELECTOR}}", selector, "{{JAIL}}", jail, "{{MODIFY_ACTIONS}}", modify).Replace(a.fail2banPage)
+	configMessage := s.ConfigMessage
+	if language == "en" && s.ConfigValid {
+		configMessage = i18n.Text(language, "fail2ban.config_valid")
+	}
+	state := s.Status.State
+	if language == "en" {
+		state = map[string]string{"active": "Active", "running": "Running", "inactive": "Inactive", "failed": "Failed"}[strings.ToLower(state)]
+		if state == "" {
+			state = s.Status.State
+		}
+	}
+	page := strings.NewReplacer("{{CSRF}}", token, "{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)), "{{NOTICE}}", notice, "{{INFO}}", renderPairs([][2]string{{i18n.Text(language, "common.version"), s.Info.Product + " " + s.Info.Version}, {i18n.Text(language, "common.status"), state}, {i18n.Text(language, "fail2ban.autostart"), yesNoForLanguage(s.Status.Enabled, language)}, {i18n.Text(language, "fail2ban.jails"), formatIntegerForLanguage(int64(len(s.Status.Jails)), language)}}), "{{SERVICE_ACTIONS}}", serviceActions, "{{CONFIG}}", `<span class="status-badge status-badge--`+configClass+`">`+html.EscapeString(configMessage)+`</span>`, "{{JAIL_SELECTOR}}", selector, "{{JAIL}}", jail, "{{MODIFY_ACTIONS}}", modify).Replace(i18n.Localize(a.fail2banPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 func (a *application) fail2banAction(response http.ResponseWriter, request *http.Request) {
@@ -1999,12 +2355,12 @@ func (a *application) fail2banAction(response http.ResponseWriter, request *http
 	}
 	http.Redirect(response, request, "/fail2ban?jail="+url.QueryEscape(request.PostForm.Get("jail"))+"&result="+action, http.StatusSeeOther)
 }
-func renderJailSelector(jails []string, selected string) string {
+func renderJailSelector(jails []string, selected, language string) string {
 	if len(jails) == 0 {
-		return `<p class="muted">Aucune prison disponible.</p>`
+		return `<p class="muted">` + html.EscapeString(i18n.Text(language, "fail2ban.no_jail")) + `</p>`
 	}
 	var b strings.Builder
-	b.WriteString(`<form class="selector-form" method="get" action="/fail2ban"><label>Prison</label><select name="jail">`)
+	b.WriteString(`<form class="selector-form" method="get" action="/fail2ban"><label>` + html.EscapeString(i18n.Text(language, "fail2ban.jail")) + `</label><select name="jail">`)
 	for _, j := range jails {
 		b.WriteString(`<option value="` + html.EscapeString(j) + `"`)
 		if j == selected {
@@ -2012,29 +2368,29 @@ func renderJailSelector(jails []string, selected string) string {
 		}
 		b.WriteString(`>` + html.EscapeString(j) + `</option>`)
 	}
-	b.WriteString(`</select><button class="primary-button">Afficher</button></form>`)
+	b.WriteString(`</select><button class="primary-button">` + html.EscapeString(i18n.Text(language, "common.show")) + `</button></form>`)
 	return b.String()
 }
-func renderJail(s webfail2ban.Snapshot, token string, modify bool) (string, string) {
+func renderJail(s webfail2ban.Snapshot, token string, modify bool, language string) (string, string) {
 	if s.Jail == nil {
 		return "", ""
 	}
 	j := s.Jail
-	details := renderMetricPairs([][2]string{{"Échecs actuels", strconv.FormatInt(j.CurrentlyFailed, 10)}, {"Échecs totaux", strconv.FormatInt(j.TotalFailed, 10)}, {"Bannis actuels", strconv.FormatInt(j.CurrentlyBanned, 10)}, {"Bannis totaux", strconv.FormatInt(j.TotalBanned, 10)}})
+	details := renderMetricPairs([][2]string{{i18n.Text(language, "fail2ban.current_failed"), formatIntegerForLanguage(j.CurrentlyFailed, language)}, {i18n.Text(language, "fail2ban.total_failed"), formatIntegerForLanguage(j.TotalFailed, language)}, {i18n.Text(language, "fail2ban.current_banned"), formatIntegerForLanguage(j.CurrentlyBanned, language)}, {i18n.Text(language, "fail2ban.total_banned"), formatIntegerForLanguage(j.TotalBanned, language)}})
 	var actions strings.Builder
-	actions.WriteString(`<h3>Adresses bannies</h3>`)
+	actions.WriteString(`<h3>` + html.EscapeString(i18n.Text(language, "fail2ban.banned_addresses")) + `</h3>`)
 	if len(j.BannedIPs) == 0 {
-		actions.WriteString(`<p class="muted">Aucune adresse IP n’est actuellement bannie dans cette prison.</p>`)
+		actions.WriteString(`<p class="muted">` + html.EscapeString(i18n.Text(language, "fail2ban.no_banned_ip")) + `</p>`)
 	}
 	for _, ip := range j.BannedIPs {
 		if modify {
-			actions.WriteString(`<form class="fail2ban-banned-row" method="post" action="/fail2ban/unban"><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="jail" value="` + html.EscapeString(s.Selected) + `"><input type="hidden" name="address" value="` + html.EscapeString(ip) + `"><button class="danger-button">Débannir</button><code>` + html.EscapeString(ip) + `</code></form>`)
+			actions.WriteString(`<form class="fail2ban-banned-row" method="post" action="/fail2ban/unban"><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="jail" value="` + html.EscapeString(s.Selected) + `"><input type="hidden" name="address" value="` + html.EscapeString(ip) + `"><button class="danger-button">` + html.EscapeString(i18n.Text(language, "fail2ban.unban")) + `</button><code>` + html.EscapeString(ip) + `</code></form>`)
 		} else {
 			actions.WriteString(`<div class="fail2ban-banned-row"><code>` + html.EscapeString(ip) + `</code></div>`)
 		}
 	}
 	if modify {
-		actions.WriteString(`<h3>Bannir une adresse</h3><form class="selector-form" method="post" action="/fail2ban/ban"><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="jail" value="` + html.EscapeString(s.Selected) + `"><label>Adresse IP</label><input name="address" required><button class="danger-button">Bannir</button></form>`)
+		actions.WriteString(`<h3>` + html.EscapeString(i18n.Text(language, "fail2ban.ban_address")) + `</h3><form class="selector-form" method="post" action="/fail2ban/ban"><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="jail" value="` + html.EscapeString(s.Selected) + `"><label>` + html.EscapeString(i18n.Text(language, "fail2ban.ip_address")) + `</label><input name="address" required><button class="danger-button">` + html.EscapeString(i18n.Text(language, "fail2ban.ban")) + `</button></form>`)
 	}
 	return details, actions.String()
 }
@@ -2052,6 +2408,7 @@ func (a *application) firewall(response http.ResponseWriter, request *http.Reque
 		http.Error(response, "Accès interdit.", http.StatusForbidden)
 		return
 	}
+	language := a.languageForUser(request.Context(), user.ID)
 	if a.dependencies.Firewall == nil {
 		http.Error(response, "Service pare-feu indisponible.", http.StatusServiceUnavailable)
 		return
@@ -2067,18 +2424,18 @@ func (a *application) firewall(response http.ResponseWriter, request *http.Reque
 	reload := ""
 	if level == "action" || level == "modify" {
 		if s.Info.Active {
-			reload = `<div class="header-actions"><form method="post" action="/firewall/reload"><input type="hidden" name="_token" value="` + token + `"><button class="primary-button">Recharger le pare-feu</button></form><form method="post" action="/firewall/disable" data-firewall-state-form data-firewall-state="disable"><input type="hidden" name="_token" value="` + token + `"><button class="danger-button">Désactiver le pare-feu</button></form></div>`
+			reload = `<div class="header-actions"><form method="post" action="/firewall/reload"><input type="hidden" name="_token" value="` + token + `"><button class="primary-button">` + html.EscapeString(i18n.Text(language, "firewall.reload")) + `</button></form><form method="post" action="/firewall/disable" data-firewall-state-form data-firewall-state="disable"><input type="hidden" name="_token" value="` + token + `"><button class="danger-button">` + html.EscapeString(i18n.Text(language, "firewall.disable")) + `</button></form></div>`
 		} else {
-			reload = `<form method="post" action="/firewall/enable" data-firewall-state-form data-firewall-state="enable"><input type="hidden" name="_token" value="` + token + `"><button class="primary-button">Activer le pare-feu</button></form>`
+			reload = `<form method="post" action="/firewall/enable" data-firewall-state-form data-firewall-state="enable"><input type="hidden" name="_token" value="` + token + `"><button class="primary-button">` + html.EscapeString(i18n.Text(language, "firewall.enable")) + `</button></form>`
 		}
 	}
 	add := ""
 	header := ""
 	if level == "modify" {
-		header = "<th>Action</th>"
-		add = `<article class="content-card"><h2>Ajouter une règle entrante</h2><form class="selector-form" method="post" action="/firewall/add"><input type="hidden" name="_token" value="` + token + `"><label>Action</label><select name="rule_action"><option>allow</option><option>deny</option><option>reject</option><option>limit</option></select><label>Ports</label><input name="ports" required><label>Protocole</label><select name="protocol"><option>tcp</option><option>udp</option></select><label>Source</label><input name="source" value="any" required><button class="danger-button">Ajouter la règle</button></form></article>`
+		header = "<th>" + html.EscapeString(i18n.Text(language, "common.action")) + "</th>"
+		add = `<article class="content-card"><h2>` + html.EscapeString(i18n.Text(language, "firewall.add_inbound")) + `</h2><form class="selector-form" method="post" action="/firewall/add"><input type="hidden" name="_token" value="` + token + `"><label>` + html.EscapeString(i18n.Text(language, "common.action")) + `</label><select name="rule_action"><option>allow</option><option>deny</option><option>reject</option><option>limit</option></select><label>` + html.EscapeString(i18n.Text(language, "firewall.ports")) + `</label><input name="ports" required><label>` + html.EscapeString(i18n.Text(language, "firewall.protocol")) + `</label><select name="protocol"><option>tcp</option><option>udp</option></select><label>` + html.EscapeString(i18n.Text(language, "firewall.source")) + `</label><input name="source" value="any" required><button class="danger-button">` + html.EscapeString(i18n.Text(language, "firewall.add_rule")) + `</button></form></article>`
 	}
-	version := "Inconnue"
+	version := i18n.Text(language, "common.unknown")
 	if s.Info.Version != nil {
 		version = *s.Info.Version
 	}
@@ -2086,9 +2443,9 @@ func (a *application) firewall(response http.ResponseWriter, request *http.Reque
 	if message := request.URL.Query().Get("error"); message != "" {
 		notice = `<p class="notice notice--danger">` + html.EscapeString(message) + `</p>`
 	} else if request.URL.Query().Get("result") != "" {
-		notice = `<p class="notice notice--success">L’action du pare-feu a été programmée.</p>`
+		notice = `<p class="notice notice--success">` + html.EscapeString(i18n.Text(language, "firewall.action_scheduled")) + `</p>`
 	}
-	page := strings.NewReplacer("{{CSRF}}", token, "{{PERMISSION}}", html.EscapeString(permissionLabel(level)), "{{NOTICE}}", notice, "{{INFO}}", renderPairs([][2]string{{"Produit", s.Info.Product + " " + version}, {"Actif", yesNo(s.Info.Active)}, {"IPv6", optionalBool(s.Info.IPv6)}, {"Entrant par défaut", s.Info.DefaultIncoming}, {"Sortant par défaut", s.Info.DefaultOutgoing}}), "{{RELOAD}}", reload, "{{ADD}}", add, "{{ACTION_HEADER}}", header, "{{RULES}}", renderFirewallRules(s.Rules, token, level == "modify")).Replace(a.firewallPage)
+	page := strings.NewReplacer("{{CSRF}}", token, "{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)), "{{NOTICE}}", notice, "{{INFO}}", renderPairs([][2]string{{i18n.Text(language, "firewall.product"), s.Info.Product + " " + version}, {i18n.Text(language, "firewall.active"), yesNoForLanguage(s.Info.Active, language)}, {"IPv6", optionalBoolForLanguage(s.Info.IPv6, language)}, {i18n.Text(language, "firewall.default_incoming"), s.Info.DefaultIncoming}, {i18n.Text(language, "firewall.default_outgoing"), s.Info.DefaultOutgoing}}), "{{RELOAD}}", reload, "{{ADD}}", add, "{{ACTION_HEADER}}", header, "{{RULES}}", renderFirewallRules(s.Rules, token, level == "modify", language)).Replace(i18n.Localize(a.firewallPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 func (a *application) firewallAction(response http.ResponseWriter, request *http.Request) {
@@ -2150,17 +2507,23 @@ func optionalBool(v *bool) string {
 	}
 	return yesNo(*v)
 }
-func renderFirewallRules(items []webfirewall.Rule, token string, modify bool) string {
-	return renderFirewallRulesWithServices(items, token, modify, readFirewallServices("/etc/services"))
+func optionalBoolForLanguage(v *bool, language string) string {
+	if v == nil {
+		return i18n.Text(language, "common.unknown")
+	}
+	return yesNoForLanguage(*v, language)
+}
+func renderFirewallRules(items []webfirewall.Rule, token string, modify bool, language string) string {
+	return renderFirewallRulesWithServices(items, token, modify, readFirewallServices("/etc/services"), language)
 }
 
-func renderFirewallRulesWithServices(items []webfirewall.Rule, token string, modify bool, services map[string]string) string {
+func renderFirewallRulesWithServices(items []webfirewall.Rule, token string, modify bool, services map[string]string, language string) string {
 	columns := 7
 	if modify {
 		columns++
 	}
 	if len(items) == 0 {
-		return `<tr><td colspan="` + strconv.Itoa(columns) + `" class="muted">Aucune règle.</td></tr>`
+		return `<tr><td colspan="` + strconv.Itoa(columns) + `" class="muted">` + html.EscapeString(i18n.Text(language, "firewall.empty")) + `</td></tr>`
 	}
 	items = append([]webfirewall.Rule(nil), items...)
 	sort.SliceStable(items, func(left, right int) bool {
@@ -2174,7 +2537,7 @@ func renderFirewallRulesWithServices(items []webfirewall.Rule, token string, mod
 	for _, i := range items {
 		b.WriteString(`<tr>`)
 		if modify {
-			b.WriteString(`<td><form class="inline-form" method="post" action="/firewall/delete"><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="id" value="` + strconv.Itoa(i.ID) + `"><button class="danger-button">Supprimer</button></form></td>`)
+			b.WriteString(`<td><form class="inline-form" method="post" action="/firewall/delete"><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="id" value="` + strconv.Itoa(i.ID) + `"><button class="danger-button">` + html.EscapeString(i18n.Text(language, "common.delete")) + `</button></form></td>`)
 		}
 		b.WriteString(`<th>` + strconv.Itoa(i.ID) + `</th><td>` + html.EscapeString(i.Action) + `</td><td>` + html.EscapeString(i.Direction) + `</td><td>` + html.EscapeString(i.Protocol) + `</td><td>` + html.EscapeString(formatFirewallRuleTarget(i, services)) + `</td><td>` + html.EscapeString(i.Source) + `</td><td>` + html.EscapeString(i.Family) + `</td></tr>`)
 	}
@@ -2296,11 +2659,12 @@ func (a *application) cron(response http.ResponseWriter, request *http.Request) 
 		http.Error(response, "Les informations Cron n’ont pas pu être chargées.", http.StatusServiceUnavailable)
 		return
 	}
+	language := a.languageForUser(ctx, user.ID)
 	token := html.EscapeString(session.CSRFToken)
 	create := ""
 	header := ""
 	if level == "action" || level == "modify" {
-		header = "<th>Actions</th>"
+		header = "<th>" + html.EscapeString(i18n.Text(language, "cron.actions")) + "</th>"
 	}
 	if level == "modify" {
 		var options strings.Builder
@@ -2311,33 +2675,46 @@ func (a *application) cron(response http.ResponseWriter, request *http.Request) 
 			}
 			options.WriteString(`<option value="` + html.EscapeString(item.Name) + `">` + html.EscapeString(label) + `</option>`)
 		}
-		create = renderBackupLibrary(token, options.String())
+		create = renderBackupLibrary(token, options.String(), language)
 	}
 	notice := ""
 	if execution := request.URL.Query().Get("execution"); execution != "" {
-		notice = `<p class="notice notice--success">Exécution Cron programmée. Le résultat va s’afficher automatiquement.</p>`
+		notice = `<p class="notice notice--success">` + html.EscapeString(i18n.Text(language, "cron.execution_scheduled")) + `</p>`
 	} else if result := request.URL.Query().Get("result"); result != "" {
-		notice = `<p class="notice notice--success">L’action Cron a été exécutée.</p>`
+		notice = `<p class="notice notice--success">` + html.EscapeString(i18n.Text(language, "cron.action_done")) + `</p>`
 	}
 	page := strings.NewReplacer(
 		"{{CSRF}}", token,
-		"{{PERMISSION}}", html.EscapeString(permissionLabel(level)),
+		"{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)),
 		"{{NOTICE}}", notice,
-		"{{INFO}}", renderPairs([][2]string{{"Version", snapshot.Info.Product + " " + snapshot.Info.Version}, {"Service", snapshot.Info.Service}, {"Unité systemd", snapshot.Info.Unit}, {"Anacron", yesNo(snapshot.Info.AnacronAvailable)}}),
-		"{{STATUS}}", renderPairs([][2]string{{"Installé", yesNo(snapshot.Status.Exists)}, {"Actif", yesNo(snapshot.Status.Active)}, {"Activé au démarrage", yesNo(snapshot.Status.Enabled)}, {"État", snapshot.Status.State}, {"PID principal", strconv.FormatInt(snapshot.Status.MainPID, 10)}, {"Mémoire", formatByteCount(snapshot.Status.MemoryBytes)}, {"Tâches du service", strconv.FormatInt(snapshot.Status.Tasks, 10)}}),
+		"{{INFO}}", renderPairs([][2]string{{i18n.Text(language, "cron.version"), snapshot.Info.Product + " " + snapshot.Info.Version}, {i18n.Text(language, "cron.service"), snapshot.Info.Service}, {i18n.Text(language, "cron.systemd_unit"), snapshot.Info.Unit}, {i18n.Text(language, "cron.anacron"), yesNoForLanguage(snapshot.Info.AnacronAvailable, language)}}),
+		"{{STATUS}}", renderPairs([][2]string{{i18n.Text(language, "cron.installed"), yesNoForLanguage(snapshot.Status.Exists, language)}, {i18n.Text(language, "cron.active"), yesNoForLanguage(snapshot.Status.Active, language)}, {i18n.Text(language, "cron.autostart"), yesNoForLanguage(snapshot.Status.Enabled, language)}, {i18n.Text(language, "cron.status"), snapshot.Status.State}, {i18n.Text(language, "cron.main_pid"), strconv.FormatInt(snapshot.Status.MainPID, 10)}, {i18n.Text(language, "cron.memory"), formatByteCountForLanguage(snapshot.Status.MemoryBytes, language)}, {i18n.Text(language, "cron.tasks"), formatIntegerForLanguage(snapshot.Status.Tasks, language)}}),
 		"{{CREATE}}", create,
 		"{{ACTION_HEADER}}", header,
-		"{{JOBS}}", renderCronJobs(snapshot.Jobs, token, level),
-	).Replace(a.cronPage)
+		"{{JOBS}}", renderCronJobs(snapshot.Jobs, token, level, language),
+	).Replace(i18n.Localize(a.cronPage, language))
 	writeHTML(response, page, http.StatusOK)
 }
 
-func renderBackupLibrary(token, userOptions string) string {
+func renderBackupLibrary(token, userOptions, language string) string {
 	months := []string{"Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"}
 	weekdays := []string{"Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"}
-	return `<section class="content-card backup-library"><h2>Bibliothèque de tâches Cron</h2><p class="muted">Choisissez un modèle ou créez une tâche personnalisée.</p><div class="cron-library-actions"><label class="library-selector">Type de tâche<select data-backup-template-select><option value="">Sélectionner un modèle</option><optgroup label="Sauvegardes"><option value="mysql">MySQL / MariaDB</option><option value="apache">Configuration Apache</option><option value="sites">Sites de /var/www</option></optgroup></select></label><button class="secondary-button" type="button" data-cron-create-open>Créer une tâche utilisateur</button></div>` +
+	content := `<section class="content-card backup-library"><h2>Bibliothèque de tâches Cron</h2><p class="muted">Choisissez un modèle ou créez une tâche personnalisée.</p><div class="cron-library-actions"><label class="library-selector">Type de tâche<select data-backup-template-select><option value="">Sélectionner un modèle</option><optgroup label="Sauvegardes"><option value="mysql">MySQL / MariaDB</option><option value="apache">Configuration Apache</option><option value="sites">Sites de /var/www</option></optgroup></select></label><button class="secondary-button" type="button" data-cron-create-open>Créer une tâche utilisateur</button></div>` +
 		`<dialog class="action-dialog action-dialog--wide" data-cron-create-dialog><form method="post" action="/cron/create" data-cron-create-form><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="task_id" data-cron-task-id><input type="hidden" name="schedule" value="0 2 * * *" data-cron-schedule><h2 data-cron-form-title>Créer une tâche utilisateur</h2><label>Utilisateur<select name="user" required data-cron-user>` + userOptions + `</select></label><fieldset class="cron-schedule-builder"><legend>Périodicité</legend><label>Mode<select data-cron-mode><option value="visual">Sélection interactive</option><option value="custom">Expression avancée</option></select></label><div class="cron-choice-groups" data-cron-visual>` + cronChoiceGroup("Minutes", "minute", 0, 59, nil, []int{0}) + cronChoiceGroup("Heures", "hour", 0, 23, nil, []int{2}) + cronChoiceGroup("Jours du mois", "monthday", 1, 31, nil, nil) + cronChoiceGroup("Mois", "month", 1, 12, months, nil) + cronChoiceGroup("Jours de la semaine", "weekday", 0, 6, weekdays, nil) + `</div><label data-cron-custom-field hidden>Expression Cron<input value="0 2 * * *" data-cron-custom></label><p class="muted" data-cron-day-warning hidden>Lorsque les jours du mois et de la semaine sont tous deux limités, Cron exécute généralement la tâche si l’un des deux critères correspond.</p><p class="cron-schedule-preview">Expression générée : <code data-cron-schedule-preview>0 2 * * *</code></p></fieldset><label>Commande<input name="command" required autocomplete="off" data-cron-command></label><div class="form-actions"><button class="primary-button" data-cron-submit>Créer la tâche</button><button class="secondary-button" type="button" data-cron-create-close>Annuler</button></div></form></dialog>` +
 		`<dialog class="action-dialog action-dialog--wide" data-backup-dialog><form method="post" action="/cron/backup/create" class="selector-form"><input type="hidden" name="_token" value="` + token + `"><input type="hidden" name="kind" data-backup-kind><h2 data-backup-title>Nouvelle sauvegarde</h2><label>Nom<input name="name" maxlength="64" required></label><label>Source<input name="source" data-backup-source required></label><label>Fréquence<select name="schedule" required><option value="0 2 * * *">Chaque nuit à 2 h</option><option value="0 3 * * 0">Chaque dimanche à 3 h</option><option value="0 4 1 * *">Chaque mois à 4 h</option></select></label><label>Stockage temporaire local<input name="destination" value="/var/backups/aegisadmin" required></label><fieldset><legend>Destination rsync/SSH</legend><label>Serveur<input name="remote_host" required></label><label>Utilisateur SSH<input name="remote_user" required></label><label>Port SSH<input name="remote_port" type="number" min="1" max="65535" value="22" required></label><label>Répertoire distant<input name="remote_path" value="/var/backups/aegisadmin" required></label><label>Clé SSH privée<input name="ssh_key" value="/etc/aegisadmin-system/backup-ssh/id_ed25519" required></label></fieldset><label>Conservation locale (jours)<input name="retention_days" type="number" min="0" max="3650" value="2" required></label><label class="checkbox-line"><input type="checkbox" name="remove_local" value="true"> Supprimer la copie locale après un transfert réussi</label><div class="form-actions"><button class="primary-button">Créer la tâche</button><button class="secondary-button" type="button" data-backup-close>Annuler</button></div></form></dialog></section>`
+	if language != "en" {
+		return content
+	}
+	return strings.NewReplacer(
+		"Bibliothèque de tâches Cron", "Cron task library", "Choisissez un modèle ou créez une tâche personnalisée.", "Choose a template or create a custom task.",
+		"Type de tâche", "Task type", "Sélectionner un modèle", "Select a template", "Sauvegardes", "Backups", "Configuration Apache", "Apache configuration", "Sites de /var/www", "/var/www sites",
+		"Créer une tâche utilisateur", "Create a user task", "Utilisateur", "User", "Périodicité", "Schedule", "Sélection interactive", "Interactive selection", "Expression avancée", "Advanced expression",
+		"Minutes", "Minutes", "Heures", "Hours", "Jours du mois", "Days of month", "Mois", "Months", "Jours de la semaine", "Days of week", "Aucune sélection = toutes les valeurs", "No selection = all values", "Tout effacer", "Clear all",
+		"Expression Cron", "Cron expression", "Lorsque les jours du mois et de la semaine sont tous deux limités, Cron exécute généralement la tâche si l’un des deux critères correspond.", "When both days of month and weekdays are restricted, Cron generally runs the task when either condition matches.", "Expression générée :", "Generated expression:",
+		"Commande", "Command", "Créer la tâche", "Create task", "Annuler", "Cancel", "Nouvelle sauvegarde", "New backup", "Nom", "Name", "Source", "Source", "Fréquence", "Frequency", "Chaque nuit à 2 h", "Every night at 2 AM", "Chaque dimanche à 3 h", "Every Sunday at 3 AM", "Chaque mois à 4 h", "Every month at 4 AM",
+		"Stockage temporaire local", "Local temporary storage", "Destination rsync/SSH", "rsync/SSH destination", "Serveur", "Server", "Utilisateur SSH", "SSH user", "Port SSH", "SSH port", "Répertoire distant", "Remote directory", "Clé SSH privée", "Private SSH key", "Conservation locale (jours)", "Local retention (days)", "Supprimer la copie locale après un transfert réussi", "Delete the local copy after a successful transfer",
+		"Jan", "Jan", "Fév", "Feb", "Mar", "Mar", "Avr", "Apr", "Mai", "May", "Juin", "Jun", "Juil", "Jul", "Août", "Aug", "Sep", "Sep", "Oct", "Oct", "Nov", "Nov", "Déc", "Dec", "Dim", "Sun", "Lun", "Mon", "Mer", "Wed", "Jeu", "Thu", "Ven", "Fri", "Sam", "Sat",
+	).Replace(content)
 }
 
 func cronChoiceGroup(title, part string, first, last int, labels []string, selected []int) string {
@@ -2503,50 +2880,50 @@ func (a *application) cronResult(response http.ResponseWriter, request *http.Req
 	writeJSON(response, result, http.StatusOK)
 }
 
-func renderCronJobs(items []webcron.Job, token, level string) string {
+func renderCronJobs(items []webcron.Job, token, level, language string) string {
 	columns := 5
 	if level == "action" || level == "modify" {
 		columns++
 	}
 	if len(items) == 0 {
-		return `<tr><td colspan="` + strconv.Itoa(columns) + `" class="muted">Aucune tâche Cron détectée.</td></tr>`
+		return `<tr><td colspan="` + strconv.Itoa(columns) + `" class="muted">` + html.EscapeString(i18n.Text(language, "cron.empty")) + `</td></tr>`
 	}
 	var result strings.Builder
 	for _, item := range items {
 		backupID := backupTaskID(item.Command)
-		state, class := "Suspendue", "warning"
+		state, class := i18n.Text(language, "cron.suspended"), "warning"
 		if item.Enabled {
-			state, class = "Active", "success"
+			state, class = i18n.Text(language, "cron.enabled"), "success"
 		}
 		result.WriteString(`<tr><td><span class="status-badge status-badge--` + class + `">` + state + `</span></td>`)
 		if level == "action" || level == "modify" {
 			result.WriteString(`<td>`)
 			if backupID != "" {
-				result.WriteString(`<select class="cron-action-select" data-backup-action data-csrf="` + token + `" data-task-id="` + backupID + `"><option value="">Action</option><option value="run">Exécuter</option>`)
+				result.WriteString(`<select class="cron-action-select" data-backup-action data-csrf="` + token + `" data-task-id="` + backupID + `"><option value="">` + html.EscapeString(i18n.Text(language, "cron.action")) + `</option><option value="run">` + html.EscapeString(i18n.Text(language, "cron.run")) + `</option>`)
 				if level == "modify" {
-					result.WriteString(`<option value="delete">Supprimer</option>`)
+					result.WriteString(`<option value="delete">` + html.EscapeString(i18n.Text(language, "cron.delete")) + `</option>`)
 				}
 				result.WriteString(`</select>`)
 			} else if item.Editable {
-				result.WriteString(`<select class="cron-action-select" aria-label="Action pour ` + html.EscapeString(item.User) + `" data-cron-action data-csrf="` + token + `" data-user="` + html.EscapeString(item.User) + `" data-task-id="` + html.EscapeString(item.ID) + `" data-schedule="` + html.EscapeString(item.Schedule) + `" data-command="` + html.EscapeString(item.Command) + `"><option value="">Action</option>`)
+				result.WriteString(`<select class="cron-action-select" data-cron-action data-csrf="` + token + `" data-user="` + html.EscapeString(item.User) + `" data-task-id="` + html.EscapeString(item.ID) + `" data-schedule="` + html.EscapeString(item.Schedule) + `" data-command="` + html.EscapeString(item.Command) + `"><option value="">` + html.EscapeString(i18n.Text(language, "cron.action")) + `</option>`)
 				if level == "modify" {
-					result.WriteString(`<option value="edit">Modifier</option>`)
+					result.WriteString(`<option value="edit">` + html.EscapeString(i18n.Text(language, "cron.edit")) + `</option>`)
 				}
 				if item.Enabled {
-					result.WriteString(`<option value="run">Exécuter</option>`)
+					result.WriteString(`<option value="run">` + html.EscapeString(i18n.Text(language, "cron.run")) + `</option>`)
 				}
 				if level == "modify" && item.Enabled {
-					result.WriteString(`<option value="suspend">Suspendre</option>`)
+					result.WriteString(`<option value="suspend">` + html.EscapeString(i18n.Text(language, "cron.suspend")) + `</option>`)
 				}
 				if level == "modify" && !item.Enabled {
-					result.WriteString(`<option value="resume">Réactiver</option>`)
+					result.WriteString(`<option value="resume">` + html.EscapeString(i18n.Text(language, "cron.resume")) + `</option>`)
 				}
 				if level == "modify" {
-					result.WriteString(`<option value="delete">Supprimer</option>`)
+					result.WriteString(`<option value="delete">` + html.EscapeString(i18n.Text(language, "cron.delete")) + `</option>`)
 				}
 				result.WriteString(`</select>`)
 			} else {
-				result.WriteString(`<span class="muted">Lecture seule</span>`)
+				result.WriteString(`<span class="muted">` + html.EscapeString(i18n.Text(language, "cron.read_only")) + `</span>`)
 			}
 			result.WriteString(`</td>`)
 		}
@@ -2715,6 +3092,20 @@ func permissionLabel(level string) string {
 	}
 }
 
+func permissionLabelForLanguage(level, language string) string {
+	if language != "en" {
+		return permissionLabel(level)
+	}
+	switch level {
+	case "modify":
+		return "Modify"
+	case "action":
+		return "Actions"
+	default:
+		return "View"
+	}
+}
+
 func (a *application) protected(state websession.State, title, message string) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		session, found := a.requestSession(request)
@@ -2761,12 +3152,12 @@ func (a *application) changePassword(response http.ResponseWriter, request *http
 		return
 	}
 	if contentType := request.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
-		a.renderPassword(response, session.CSRFToken, "La requête est invalide.", http.StatusBadRequest, mandatory, user)
+		a.renderPassword(response, session.CSRFToken, "password.error.request", http.StatusBadRequest, mandatory, user)
 		return
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, 8*1024)
 	if err := request.ParseForm(); err != nil || !a.dependencies.Sessions.ValidateCSRF(session.ID, request.PostForm.Get("_token")) {
-		a.renderPassword(response, session.CSRFToken, "La requête est invalide.", http.StatusBadRequest, mandatory, user)
+		a.renderPassword(response, session.CSRFToken, "password.error.request", http.StatusBadRequest, mandatory, user)
 		return
 	}
 	currentPassword := request.PostForm.Get("current_password")
@@ -2776,20 +3167,20 @@ func (a *application) changePassword(response http.ResponseWriter, request *http
 	if !a.dependencies.PasswordLimiter.Allowed(address, account) ||
 		!webauth.VerifyPassword(currentPassword, user.PasswordHash) {
 		a.dependencies.PasswordLimiter.Failure(address, account)
-		a.renderPassword(response, session.CSRFToken, "Le mot de passe actuel est incorrect.", http.StatusUnauthorized, mandatory, user)
+		a.renderPassword(response, session.CSRFToken, "password.error.current", http.StatusUnauthorized, mandatory, user)
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(newPassword), []byte(confirmation)) != 1 {
-		a.renderPassword(response, session.CSRFToken, "La confirmation du nouveau mot de passe ne correspond pas.", http.StatusBadRequest, mandatory, user)
+		a.renderPassword(response, session.CSRFToken, "password.error.confirmation", http.StatusBadRequest, mandatory, user)
 		return
 	}
 	if webauth.VerifyPassword(newPassword, user.PasswordHash) {
-		a.renderPassword(response, session.CSRFToken, "Le nouveau mot de passe doit être différent du mot de passe actuel.", http.StatusBadRequest, mandatory, user)
+		a.renderPassword(response, session.CSRFToken, "password.error.same", http.StatusBadRequest, mandatory, user)
 		return
 	}
 	newHash, err := webauth.HashPassword(newPassword)
 	if err != nil {
-		a.renderPassword(response, session.CSRFToken, "Le nouveau mot de passe doit contenir entre 12 et 128 caractères.", http.StatusBadRequest, mandatory, user)
+		a.renderPassword(response, session.CSRFToken, "password.error.length", http.StatusBadRequest, mandatory, user)
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
@@ -2838,40 +3229,47 @@ func (a *application) passwordUser(response http.ResponseWriter, request *http.R
 	return session, user, mandatory, true
 }
 
-func (a *application) renderPassword(response http.ResponseWriter, csrf, message string, status int, mandatory bool, user authstore.User) {
+func (a *application) renderPassword(response http.ResponseWriter, csrf, messageKey string, status int, mandatory bool, user authstore.User) {
+	language := a.languageForUser(context.Background(), user.ID)
+	t := func(key string) string { return i18n.Text(language, key) }
 	errorMessage := ""
-	if message != "" {
-		errorMessage = `<p class="error">` + html.EscapeString(message) + `</p>`
+	if messageKey != "" {
+		errorMessage = `<p class="error">` + html.EscapeString(t(messageKey)) + `</p>`
 	}
 	template := a.accountPasswordPage
 	twoFactor := ""
+	languagePreference := ""
 	if mandatory {
 		template = a.passwordPage
-	} else if user.TOTPEnabledAt.Valid {
-		detail := "Elle est facultative pour ce compte."
-		action := `<form method="post" action="/go/account/two-factor/disable"><input type="hidden" name="_token" value="` + html.EscapeString(csrf) + `"><label>Code d’authentification actuel<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,11}" maxlength="11" required></label><button class="danger-button">Désactiver la double authentification</button></form>`
+	} else {
+		languagePreference = `<section class="content-card account-password-card"><h2>` + html.EscapeString(t("account.language.title")) + `</h2><p class="muted">` + html.EscapeString(t("account.language.help")) + `</p><form class="selector-form" method="post" action="/go/account/language"><input type="hidden" name="_token" value="` + html.EscapeString(csrf) + `"><label for="account-language">` + html.EscapeString(t("account.language.label")) + `</label><select id="account-language" name="language" required>` + renderLanguageOptions(language) + `</select><button class="primary-button">` + html.EscapeString(t("account.language.save")) + `</button></form></section>`
+	}
+	if !mandatory && user.TOTPEnabledAt.Valid {
+		detail := t("two_factor.optional")
+		action := `<form method="post" action="/go/account/two-factor/disable"><input type="hidden" name="_token" value="` + html.EscapeString(csrf) + `"><label>` + html.EscapeString(t("two_factor.current_code")) + `<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,11}" maxlength="11" required></label><button class="danger-button">` + html.EscapeString(t("two_factor.disable")) + `</button></form>`
 		if user.TwoFactorRequired {
-			detail = "Elle est obligatoire pour ce compte."
+			detail = t("two_factor.required")
 			action = ""
 		}
-		twoFactor = `<section class="content-card account-password-card"><h2>Double authentification</h2><p>État : <strong>activée</strong>. ` + detail + `</p>` + action + `</section>`
+		twoFactor = `<section class="content-card account-password-card"><h2>` + html.EscapeString(t("two_factor.title")) + `</h2><p>` + html.EscapeString(t("two_factor.status")) + ` : <strong>` + html.EscapeString(t("two_factor.enabled")) + `</strong>. ` + html.EscapeString(detail) + `</p>` + action + `</section>`
 	} else {
-		twoFactor = `<section class="content-card account-password-card"><h2>Double authentification</h2><p>État : <strong>désactivée</strong>.</p><a class="primary-button" href="/go/account/two-factor/setup">Activer la double authentification</a></section>`
+		twoFactor = `<section class="content-card account-password-card"><h2>` + html.EscapeString(t("two_factor.title")) + `</h2><p>` + html.EscapeString(t("two_factor.status")) + ` : <strong>` + html.EscapeString(t("two_factor.disabled")) + `</strong>.</p><a class="primary-button" href="/go/account/two-factor/setup">` + html.EscapeString(t("two_factor.enable")) + `</a></section>`
 	}
 	page := strings.NewReplacer(
 		"{{CSRF}}", html.EscapeString(csrf),
 		"{{ERROR}}", errorMessage,
 		"{{TWO_FACTOR}}", twoFactor,
-	).Replace(template)
+		"{{LANGUAGE}}", languagePreference,
+	).Replace(i18n.Localize(template, language))
 	writeHTML(response, page, status)
 }
 
 func (a *application) twoFactor(response http.ResponseWriter, request *http.Request) {
-	session, _, found := a.pendingTwoFactorUser(response, request)
+	session, user, found := a.pendingTwoFactorUser(response, request)
 	if !found {
 		return
 	}
-	a.renderTwoFactor(response, session.CSRFToken, false, http.StatusOK)
+	a.renderTwoFactor(response, session.CSRFToken, user.ID, false, http.StatusOK)
 }
 
 func (a *application) verifyTwoFactor(response http.ResponseWriter, request *http.Request) {
@@ -2884,12 +3282,12 @@ func (a *application) verifyTwoFactor(response http.ResponseWriter, request *htt
 		return
 	}
 	if contentType := request.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
-		a.renderTwoFactor(response, session.CSRFToken, true, http.StatusBadRequest)
+		a.renderTwoFactor(response, session.CSRFToken, user.ID, true, http.StatusBadRequest)
 		return
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, 4*1024)
 	if err := request.ParseForm(); err != nil || !a.dependencies.Sessions.ValidateCSRF(session.ID, request.PostForm.Get("_token")) {
-		a.renderTwoFactor(response, session.CSRFToken, true, http.StatusBadRequest)
+		a.renderTwoFactor(response, session.CSRFToken, user.ID, true, http.StatusBadRequest)
 		return
 	}
 	address, account := requestAddress(request), user.Login
@@ -2897,7 +3295,7 @@ func (a *application) verifyTwoFactor(response http.ResponseWriter, request *htt
 		!a.dependencies.TwoFactor.Verify(user.TOTPSecret.String, request.PostForm.Get("code")) {
 		a.dependencies.TwoFactorLimiter.Failure(address, account)
 		a.recordAccess(request, &user, account, "two_factor_failure", false)
-		a.renderTwoFactor(response, session.CSRFToken, true, http.StatusUnauthorized)
+		a.renderTwoFactor(response, session.CSRFToken, user.ID, true, http.StatusUnauthorized)
 		return
 	}
 	a.dependencies.TwoFactorLimiter.Success(account)
@@ -2938,15 +3336,16 @@ func (a *application) pendingTwoFactorUser(response http.ResponseWriter, request
 	return session, user, true
 }
 
-func (a *application) renderTwoFactor(response http.ResponseWriter, csrf string, failed bool, status int) {
+func (a *application) renderTwoFactor(response http.ResponseWriter, csrf string, userID int64, failed bool, status int) {
+	language := a.languageForUser(context.Background(), userID)
 	errorMessage := ""
 	if failed {
-		errorMessage = `<p class="error">Le code de vérification ou la requête est invalide.</p>`
+		errorMessage = `<p class="error">` + html.EscapeString(i18n.Text(language, "two_factor.error")) + `</p>`
 	}
 	page := strings.NewReplacer(
 		"{{CSRF}}", html.EscapeString(csrf),
 		"{{ERROR}}", errorMessage,
-	).Replace(a.twoFactorPage)
+	).Replace(i18n.Localize(a.twoFactorPage, language))
 	writeHTML(response, page, status)
 }
 
@@ -3123,6 +3522,7 @@ func (a *application) pendingEnrollmentUser(response http.ResponseWriter, reques
 }
 
 func (a *application) renderTwoFactorSetup(response http.ResponseWriter, csrf string, user authstore.User, failed bool, status int, action string) {
+	language := a.languageForUser(context.Background(), user.ID)
 	uri, err := webauth.TOTPProvisioningURI(user.Login, user.TOTPSecret.String)
 	if err != nil {
 		http.Error(response, "La configuration TOTP est invalide.", http.StatusServiceUnavailable)
@@ -3135,7 +3535,7 @@ func (a *application) renderTwoFactorSetup(response http.ResponseWriter, csrf st
 	}
 	errorMessage := ""
 	if failed {
-		errorMessage = `<p class="error">Le code de contrôle ou la requête est invalide.</p>`
+		errorMessage = `<p class="error">` + html.EscapeString(i18n.Text(language, "two_factor.setup.error")) + `</p>`
 	}
 	page := strings.NewReplacer(
 		"{{CSRF}}", html.EscapeString(csrf),
@@ -3143,7 +3543,7 @@ func (a *application) renderTwoFactorSetup(response http.ResponseWriter, csrf st
 		"{{SECRET}}", html.EscapeString(user.TOTPSecret.String),
 		"{{QRCODE}}", base64.StdEncoding.EncodeToString(image),
 		"{{ACTION}}", html.EscapeString(action),
-	).Replace(a.twoFactorSetupPage)
+	).Replace(i18n.Localize(a.twoFactorSetupPage, language))
 	writeHTML(response, page, status)
 }
 
@@ -3158,16 +3558,51 @@ func (a *application) requestSession(request *http.Request) (websession.Session,
 	return a.dependencies.Sessions.Get(cookie.Value)
 }
 
-func (a *application) renderLogin(response http.ResponseWriter, csrf string, failed bool, status int) {
+func (a *application) renderLogin(request *http.Request, response http.ResponseWriter, csrf string, failed bool, status int) {
+	language := a.languageForAnonymous(request)
 	errorMessage := ""
 	if failed {
-		errorMessage = `<p class="error">Identifiant, mot de passe ou requête invalide.</p>`
+		errorMessage = `<p class="error">` + html.EscapeString(i18n.Text(language, "login.invalid")) + `</p>`
+	}
+	if a.dependencies.Users != nil {
+		_, initialized, err := a.dependencies.Users.FindRoot(request.Context())
+		if err == nil && !initialized {
+			errorMessage = `<div class="notice notice--warning"><strong>` + html.EscapeString(i18n.Text(language, "login.initialization.title")) + `</strong><p>` + i18n.Text(language, "login.initialization.message") + `</p></div>` + errorMessage
+		}
 	}
 	page := strings.NewReplacer(
 		"{{CSRF}}", html.EscapeString(csrf),
 		"{{ERROR}}", errorMessage,
-	).Replace(a.loginPage)
+	).Replace(i18n.Localize(a.loginPage, language))
 	writeHTML(response, page, status)
+}
+
+func (a *application) defaultLanguage(ctx context.Context) string {
+	if a.dependencies.Settings != nil {
+		if settings, err := a.dependencies.Settings.Settings(ctx); err == nil && i18n.Supported(settings.DefaultLanguage) {
+			return settings.DefaultLanguage
+		}
+	}
+	if i18n.Supported(a.dependencies.DefaultLanguage) {
+		return a.dependencies.DefaultLanguage
+	}
+	return i18n.DefaultLanguage
+}
+
+func (a *application) languageForAnonymous(request *http.Request) string {
+	if cookie, err := request.Cookie("aegisadmin_language"); err == nil && i18n.Supported(cookie.Value) {
+		return cookie.Value
+	}
+	return a.defaultLanguage(request.Context())
+}
+
+func (a *application) languageForUser(ctx context.Context, userID int64) string {
+	if a.dependencies.Users != nil {
+		if language, err := a.dependencies.Users.LanguageForUser(ctx, userID); err == nil && i18n.Supported(language) {
+			return language
+		}
+	}
+	return a.defaultLanguage(ctx)
 }
 
 func (a *application) invalidate(response http.ResponseWriter, id string) {

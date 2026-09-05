@@ -1,71 +1,65 @@
 # AegisAdmin
 
-AegisAdmin est une interface web d'administration et de supervision d'un
-serveur Linux. Elle rassemble dans une interface unique les opérations
-courantes tout en conservant les outils natifs du système.
+[Documentation française](README.fr.md)
 
-La série 0.2.x est une **version candidate destinée aux essais**. Pour une
-première installation, utilisez une machine virtuelle ou un serveur de test
-disposant d'une sauvegarde restaurable et conservez un accès SSH indépendant.
+AegisAdmin is a lightweight web administration and monitoring interface for
+Debian and Ubuntu servers. The 0.2.x series is a release candidate intended for
+testing on a recoverable machine with an independent SSH access path.
 
-## Fonctions principales
+## Main features
 
-- tableau de bord, ressources système et processus ;
-- stockage, réseau, services et journaux ;
-- Apache et VirtualHosts, PHP-FPM, MySQL et Tor ;
-- Fail2ban, pare-feu et certificats TLS avec Certbot ;
-- tâches Cron et résultats d'exécution ;
-- mises à jour APT, firmwares et dépendances Composer ;
-- utilisateurs, droits par module, journal d'accès et double authentification ;
-- paramètres, sauvegarde de la base et snapshots de configuration du serveur.
+- dashboard, system resources, processes, storage, network and logs;
+- systemd services, Apache VirtualHosts, PHP-FPM, MySQL/MariaDB and Tor;
+- Fail2ban, UFW firewall and TLS certificates with Certbot;
+- Cron tasks and execution results;
+- APT, firmware and hosted-site Composer dependency updates;
+- users, per-module permissions, access log and TOTP two-factor authentication;
+- settings, SQLite backups and server-configuration snapshots;
+- French and English interface with four persistent themes.
 
-## Architecture et sécurité
+## Architecture and security
 
-L'application est écrite en Go et sépare deux composants :
+The application separates two Go components:
 
-- `aegisadmin-web`, serveur web exécuté avec un compte non privilégié ;
-- `aegisadmin-daemon`, backend système privilégié accessible uniquement par un
-  socket Unix privé.
+- `aegisadmin-web`, running as the unprivileged `aegisadmin` account;
+- `aegisadmin-daemon`, the privileged system backend, reachable only through a
+  protected Unix socket.
 
-Cette séparation applique le principe du moindre privilège. Les actions sont
-contrôlées par domaine et par niveau d'autorisation : Consultation, Actions ou
-Modification. L'application comprend également la protection CSRF, des
-sessions sécurisées, la double authentification TOTP et un journal des accès.
+System operations are explicitly registered and validated. Permissions are
+enforced server-side at View, Actions or Modify level. AegisAdmin also provides
+CSRF protection, secure persistent sessions, TOTP and an access audit log.
 
-Les mises à jour de paquets sont confiées à une unité systemd indépendante. Le
-suivi persistant permet à l'interface de retrouver leur progression après son
-propre redémarrage.
+Without Apache, the Go web server provides HTTPS directly on port `8443`. If
+Apache is already installed, the package configures it as a reverse proxy to
+`https://127.0.0.1:9080`. AegisAdmin never installs Apache implicitly.
 
-Consultez [l'architecture détaillée](docs/ARCHITECTURE.md) et la
-[politique de sécurité](SECURITY.md).
+See the [architecture](docs/en/architecture.md) and
+[security policy](SECURITY.md).
 
-## Systèmes pris en charge
+## Supported systems
 
-La livraison publique actuelle cible :
+The current public release targets Debian or Ubuntu with systemd, APT and the
+`amd64` architecture. An `arm64` package can be built from the source but still
+requires validation before official publication.
 
-- Debian ou Ubuntu avec systemd et APT ;
-- architecture `amd64` ;
-- Apache comme frontal HTTPS.
+## Install the release candidate
 
-Le code permet également de construire un paquet `arm64`, mais cette
-architecture doit encore être validée avant d'être annoncée comme livraison
-officielle.
+Packages are distributed through the official signed APT repository:
 
-## Installer la version candidate
+- website: <https://aegisadmin.fr/>;
+- package repository: <https://packages.aegisadmin.fr/>;
+- [installation and testing guide](docs/en/tester-installation-guide.md).
 
-Le paquet est distribué par le dépôt APT signé officiel :
+Never disable APT signature verification. After package installation, create
+the root account and select the default interface language:
 
-- site : <https://aegisadmin.fr/> ;
-- guide de téléchargement, contrôle et installation :
-  <https://aegisadmin.fr/article/telecharger-verifier-et-installer-aegisadmin/> ;
-- dépôt APT : <https://packages.aegisadmin.fr/>.
+```bash
+sudo aegisadmin initialize
+```
 
-Ne désactivez jamais la vérification des signatures APT. Le guide officiel
-indique comment vérifier l'empreinte de la clé avant de l'installer.
+## Develop and verify
 
-## Développer et contrôler les sources
-
-Go 1.22 ou une version compatible est nécessaire.
+Go 1.22 or a compatible version is required on the development machine only.
 
 ```bash
 cd backend/go
@@ -73,33 +67,32 @@ go test ./...
 go vet ./...
 ```
 
-Sur une machine Debian ou Ubuntu disposant des outils de construction :
+Build and verify the Debian package from the repository root:
 
 ```bash
 bash packaging/build-deb.sh
 bash packaging/check-deb.sh dist/aegisadmin_$(cat VERSION)_amd64.deb
 ```
 
-Les scripts de déploiement modifient le système et doivent uniquement être
-exécutés sur une machine de test prévue à cet effet.
+Deployment scripts modify the operating system and must only be used on an
+appropriate test machine.
 
 ## Documentation
 
-Le [sommaire de la documentation](docs/README.md) donne accès aux guides
-d'architecture, d'exploitation, de construction du paquet, de publication du
-dépôt APT et de récupération du compte administrateur.
+The [English documentation index](docs/README.md) covers installation,
+operations, architecture, permissions, recovery and packaging. The
+[French documentation index](docs/README.fr.md) remains available alongside it.
 
-L'état de la version candidate est présenté dans
-[PROJECT_STATUS.md](docs/PROJECT_STATUS.md) et les prochaines étapes dans
-[ROADMAP.md](docs/ROADMAP.md).
+Current release status is tracked in the
+[project status](docs/en/project-status.md) and planned work in the
+[roadmap](docs/en/roadmap.md).
 
-## Contribuer et signaler un problème
+## Contributing and reporting security issues
 
-Consultez [CONTRIBUTING.md](CONTRIBUTING.md) avant de proposer une modification.
-Les vulnérabilités ne doivent pas être publiées dans une issue : suivez les
-instructions de [SECURITY.md](SECURITY.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a change. Do not open
+a public issue for a vulnerability; follow [SECURITY.md](SECURITY.md).
 
-## Licence
+## License
 
-AegisAdmin est distribué sous licence
+AegisAdmin is licensed under the
 [GNU Affero General Public License v3.0](LICENSE).

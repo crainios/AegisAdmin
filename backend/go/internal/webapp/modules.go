@@ -13,7 +13,7 @@ import (
 )
 
 func (a *application) modules(w http.ResponseWriter, r *http.Request) {
-	session, _, ok := a.rootUser(w, r)
+	session, current, ok := a.rootUser(w, r)
 	if !ok {
 		return
 	}
@@ -32,29 +32,37 @@ func (a *application) modules(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("result") != "" {
 		notice = `<p class="notice notice--success">La navigation a été mise à jour.</p>`
 	}
-	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{NOTICE}}", notice, "{{CATEGORIES}}", renderAdminNavigation(items, session.CSRFToken)).Replace(a.modulesPage)
+	language := a.languageForUser(ctx, current.ID)
+	page := strings.NewReplacer("{{CSRF}}", html.EscapeString(session.CSRFToken), "{{NOTICE}}", notice, "{{CATEGORIES}}", renderAdminNavigation(items, session.CSRFToken, language)).Replace(a.modulesPage)
+	page = localizeModulesHTML(page, language)
 	writeHTML(w, page, http.StatusOK)
 }
-func renderAdminNavigation(items []authstore.AdminCategory, token string) string {
+func renderAdminNavigation(items []authstore.AdminCategory, token, language string) string {
+	t := func(fr, en string) string {
+		if language == "en" {
+			return en
+		}
+		return fr
+	}
 	var b strings.Builder
 	for _, c := range items {
 		id := strconv.FormatInt(c.ID, 10)
-		b.WriteString(`<section class="content-card modules-page__category" data-navigation-category data-category-id="` + id + `"><header class="modules-page__category-header"><button class="drag-handle" type="button" draggable="true" data-navigation-category-handle aria-label="Déplacer la catégorie">☰</button><form class="selector-form" method="post" action="/modules/categories/` + id + `/rename"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input name="name" value="` + html.EscapeString(c.Name) + `" minlength="2" maxlength="64" required><button class="secondary-button">Renommer</button></form><div class="header-actions fallback-move-actions">` + moveForm("/modules/categories/"+id+"/move", -1, "Monter", token) + moveForm("/modules/categories/"+id+"/move", 1, "Descendre", token) + `</div></header>`)
+		b.WriteString(`<section class="content-card modules-page__category" data-navigation-category data-category-id="` + id + `"><header class="modules-page__category-header"><button class="drag-handle" type="button" draggable="true" data-navigation-category-handle aria-label="` + t("Déplacer la catégorie", "Move category") + `">☰</button><form class="selector-form" method="post" action="/modules/categories/` + id + `/rename"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input name="name" value="` + html.EscapeString(c.Name) + `" minlength="2" maxlength="64" required><button class="secondary-button">` + t("Renommer", "Rename") + `</button></form><div class="header-actions fallback-move-actions">` + moveForm("/modules/categories/"+id+"/move", -1, t("Monter", "Move up"), token) + moveForm("/modules/categories/"+id+"/move", 1, t("Descendre", "Move down"), token) + `</div></header>`)
 		if len(c.Modules) == 0 {
-			b.WriteString(`<div class="table-scroll"><table class="data-table"><tbody data-navigation-module-list><tr data-navigation-empty-row><td class="muted">Déposez un module dans cette catégorie.</td></tr></tbody></table></div><form method="post" action="/modules/categories/` + id + `/delete"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><button class="danger-button">Supprimer la catégorie</button></form>`)
+			b.WriteString(`<div class="table-scroll"><table class="data-table"><tbody data-navigation-module-list><tr data-navigation-empty-row><td class="muted">` + t("Déposez un module dans cette catégorie.", "Drop a module into this category.") + `</td></tr></tbody></table></div><form method="post" action="/modules/categories/` + id + `/delete"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><button class="danger-button">` + t("Supprimer la catégorie", "Delete category") + `</button></form>`)
 		} else {
-			b.WriteString(`<div class="table-scroll"><table class="data-table modules-table"><thead><tr><th>Ordre</th><th>Module</th><th>Route</th><th>Accès</th><th>État</th></tr></thead><tbody data-navigation-module-list>`)
+			b.WriteString(`<div class="table-scroll"><table class="data-table modules-table"><thead><tr><th>` + t("Ordre", "Order") + `</th><th>Module</th><th>Route</th><th>` + t("Accès", "Access") + `</th><th>` + t("État", "Status") + `</th></tr></thead><tbody data-navigation-module-list>`)
 			for _, m := range c.Modules {
 				mid := strconv.FormatInt(m.ID, 10)
-				state := "Désactivé"
+				state := t("Désactivé", "Disabled")
 				if m.Enabled {
-					state = "Activé"
+					state = t("Activé", "Enabled")
 				}
-				b.WriteString(`<tr class="modules-page__module" draggable="true" data-navigation-module data-module-id="` + mid + `"><td class="modules-order"><button class="drag-handle" type="button" data-navigation-module-handle aria-label="Déplacer le module">☰</button><span class="fallback-move-actions">` + moveForm("/modules/"+mid+"/move", -1, "↑", token) + moveForm("/modules/"+mid+"/move", 1, "↓", token) + `</span></td><th><div class="module-name-line"><span>` + html.EscapeString(m.Icon+" "+m.Name) + `</span>`)
+				b.WriteString(`<tr class="modules-page__module" draggable="true" data-navigation-module data-module-id="` + mid + `"><td class="modules-order"><button class="drag-handle" type="button" data-navigation-module-handle aria-label="` + t("Déplacer le module", "Move module") + `">☰</button><span class="fallback-move-actions">` + moveForm("/modules/"+mid+"/move", -1, "↑", token) + moveForm("/modules/"+mid+"/move", 1, "↓", token) + `</span></td><th><div class="module-name-line"><span>` + html.EscapeString(m.Icon+" "+m.Name) + `</span>`)
 				if !m.Essential {
-					b.WriteString(`<form class="inline-form" method="post" action="/modules/` + mid + `/toggle"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input type="hidden" name="enabled" value="` + strconv.FormatBool(!m.Enabled) + `"><button class="secondary-button module-toggle-button">` + map[bool]string{true: "Désactiver", false: "Activer"}[m.Enabled] + `</button></form>`)
+					b.WriteString(`<form class="inline-form" method="post" action="/modules/` + mid + `/toggle"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input type="hidden" name="enabled" value="` + strconv.FormatBool(!m.Enabled) + `"><button class="secondary-button module-toggle-button">` + map[bool]string{true: t("Désactiver", "Disable"), false: t("Activer", "Enable")}[m.Enabled] + `</button></form>`)
 				} else {
-					b.WriteString(`<small class="muted">essentiel</small>`)
+					b.WriteString(`<small class="muted">` + t("essentiel", "essential") + `</small>`)
 				}
 				b.WriteString(`</div></th><td><code>` + html.EscapeString(m.Route) + `</code></td><td>` + html.EscapeString(m.AccessPolicy) + `</td><td>` + state + `</td></tr>`)
 			}
@@ -66,6 +74,13 @@ func renderAdminNavigation(items []authstore.AdminCategory, token string) string
 }
 func moveForm(action string, direction int, label, token string) string {
 	return `<form method="post" action="` + action + `"><input type="hidden" name="_token" value="` + html.EscapeString(token) + `"><input type="hidden" name="direction" value="` + strconv.Itoa(direction) + `"><button class="secondary-button">` + label + `</button></form>`
+}
+
+func localizeModulesHTML(value, language string) string {
+	if language != "en" {
+		return value
+	}
+	return strings.NewReplacer(`lang="fr"`, `lang="en"`, "Organisez le menu, ses catégories et les modules disponibles.", "Organize the menu, its categories and available modules.", "Se déconnecter", "Sign out", "La navigation a été mise à jour.", "Navigation was updated.", "Organisation du menu", "Menu organization", "Faites glisser les poignées pour déplacer une catégorie ou un module. Un module peut passer d’une catégorie à une autre.", "Drag the handles to move a category or module. A module can be moved between categories.", "Nouvelle catégorie", "New category", "Ajouter", "Add").Replace(value)
 }
 func (a *application) navigationAction(w http.ResponseWriter, r *http.Request, operation func(int64) error) {
 	session, _, ok := a.rootUser(w, r)

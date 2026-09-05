@@ -14,7 +14,8 @@ UMask=0027
 PrivateTmp=true
 ProtectHome=true
 ProtectKernelTunables=true
-ProtectKernelModules=true
+# L’installation légitime d’un noyau doit pouvoir écrire dans /usr/lib/modules.
+ProtectKernelModules=false
 ProtectKernelLogs=true
 ProtectControlGroups=true
 LockPersonality=true

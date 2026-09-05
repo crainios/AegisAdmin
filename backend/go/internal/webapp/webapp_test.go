@@ -30,6 +30,7 @@ import (
 	"aegisadmin/backend/internal/websession"
 	"aegisadmin/backend/internal/webstorage"
 	"aegisadmin/backend/internal/webtor"
+	"aegisadmin/backend/internal/webupdates"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -67,13 +68,37 @@ func TestApplicationJavaScriptOffersNeonTheme(t *testing.T) {
 	}
 }
 
+func TestCertbotResultUsesAnAccessiblePollingModal(t *testing.T) {
+	template, err := embeddedAssets.ReadFile("assets/certbot.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := embeddedAssets.ReadFile("assets/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(template), `data-certbot-result-modal`) || !strings.Contains(string(template), `aria-modal="true"`) || !strings.Contains(string(template), `data-certbot-result-output`) {
+		t.Fatal("the Certbot result modal is incomplete")
+	}
+	if !strings.Contains(string(script), `/certbot/actions/${encodeURIComponent(id)}`) || !strings.Contains(string(script), `result.status === "running"`) || !strings.Contains(string(script), `window.location.replace("/certbot")`) {
+		t.Fatal("the Certbot result polling or refresh behavior is missing")
+	}
+}
+
 func TestProcessDescriptionsAreLimitedToKnownProcesses(t *testing.T) {
-	rows := renderProcesses([]webdashboard.Process{{Name: "sshd", Description: "Serveur d’accès distant sécurisé SSH."}, {Name: "private-worker"}})
+	rows := renderProcesses([]webdashboard.Process{{Name: "sshd", State: "R", StateLabel: "En cours", Description: "Serveur d’accès distant sécurisé SSH."}, {Name: "private-worker", State: "S", StateLabel: "En veille"}}, "fr")
 	if !strings.Contains(rows, `title="Serveur d’accès distant sécurisé SSH."`) || !strings.Contains(rows, `aria-label="sshd : Serveur d’accès distant sécurisé SSH."`) {
 		t.Fatalf("known process has no accessible description: %q", rows)
 	}
 	if strings.Count(rows, `process-name--described`) != 1 {
 		t.Fatalf("unknown process received an approximate description: %q", rows)
+	}
+	if !strings.Contains(rows, "En cours · R") || !strings.Contains(rows, "En veille · S") {
+		t.Fatalf("French process states are missing: %q", rows)
+	}
+	englishRows := renderProcesses([]webdashboard.Process{{Name: "sshd", State: "R", StateLabel: "En cours"}, {Name: "worker", State: "D", StateLabel: "Attente disque"}}, "en")
+	if !strings.Contains(englishRows, "Running · R") || !strings.Contains(englishRows, "Disk wait · D") || strings.Contains(englishRows, "En cours") {
+		t.Fatalf("English process states are not translated: %q", englishRows)
 	}
 }
 
@@ -88,8 +113,45 @@ func TestRootCanReadUserAccessLog(t *testing.T) {
 	request.AddCookie(websession.Cookie(session.ID))
 	response := httptest.NewRecorder()
 	Handler(dependencies).ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Connexion réussie") || !strings.Contains(response.Body.String(), "192.0.2.1") || !strings.Contains(response.Body.String(), `<select name="login">`) || !strings.Contains(response.Body.String(), `operator`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Connexion réussie") || !strings.Contains(response.Body.String(), "25/08/2026 10:00") || !strings.Contains(response.Body.String(), "192.0.2.1") || !strings.Contains(response.Body.String(), `<select name="login">`) || !strings.Contains(response.Body.String(), `operator`) {
 		t.Fatalf("access log=%d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestStorageUsesProfileLanguage(t *testing.T) {
+	users := &fakeLoginUsers{user: authstore.User{ID: 1, Login: "root", Type: "root", Status: "active", AuthVersion: 1}, language: "en"}
+	dependencies := testDependencies(t, users)
+	session, err := dependencies.Sessions.Create(websession.StateAuthenticated, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/storage", nil)
+	request.AddCookie(websession.Cookie(session.ID))
+	response := httptest.NewRecorder()
+	Handler(dependencies).ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `<html lang="en">`) ||
+		!strings.Contains(response.Body.String(), "Physical disk") || !strings.Contains(response.Body.String(), "Healthy") ||
+		!strings.Contains(response.Body.String(), "Permission Modify") {
+		t.Fatalf("English storage=%d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestAboutUsesProfileLanguage(t *testing.T) {
+	users := &fakeLoginUsers{user: authstore.User{ID: 1, Login: "root", Type: "root", Status: "active", AuthVersion: 1}, language: "en"}
+	dependencies := testDependencies(t, users)
+	session, err := dependencies.Sessions.Create(websession.StateAuthenticated, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/about", nil)
+	request.AddCookie(websession.Cookie(session.ID))
+	response := httptest.NewRecorder()
+	Handler(dependencies).ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `<html lang="en">`) ||
+		!strings.Contains(body, "About AegisAdmin") || !strings.Contains(body, "Open-source project") ||
+		!strings.Contains(body, ">Sign out<") || strings.Contains(body, "À propos d’AegisAdmin") {
+		t.Fatalf("English about=%d %q", response.Code, body)
 	}
 }
 
@@ -170,8 +232,107 @@ func TestIndexAndNotFound(t *testing.T) {
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/app.js?v=test", nil))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "app-shell") ||
+		!strings.Contains(response.Body.String(), `const csrfToken = logout?.querySelector('input[name="_token"]')?.value || "";`) ||
+		!strings.Contains(response.Body.String(), `new Intl.NumberFormat(activeLanguage === "en" ? "en-US" : "fr-FR")`) ||
+		strings.Contains(response.Body.String(), `header.querySelector('form[action="/logout"] input[name="_token"]')`) ||
 		!strings.Contains(response.Header().Get("Cache-Control"), "immutable") {
 		t.Fatalf("unexpected versioned script: %d %q", response.Code, response.Header().Get("Cache-Control"))
+	}
+}
+
+func TestAuthenticatedUserCanSaveTheme(t *testing.T) {
+	users := &fakeLoginUsers{user: authstore.User{ID: 1, Login: "root", Type: "root", Status: "active", AuthVersion: 1}}
+	dependencies := testDependencies(t, users)
+	session, err := dependencies.Sessions.Create(websession.StateAuthenticated, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"_token": {session.CSRFToken}, "theme": {"neon"}}
+	request := httptest.NewRequest(http.MethodPost, "/go/account/theme", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(websession.Cookie(session.ID))
+	response := httptest.NewRecorder()
+	Handler(dependencies).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || users.theme != "neon" {
+		t.Fatalf("theme response=%d stored=%q", response.Code, users.theme)
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "aegisadmin_theme" || cookies[0].Value != "neon" || !cookies[0].Secure || cookies[0].MaxAge != 31536000 {
+		t.Fatalf("theme cookie=%#v", cookies)
+	}
+}
+
+func TestAuthenticatedUserCanSaveLanguage(t *testing.T) {
+	users := &fakeLoginUsers{user: authstore.User{ID: 1, Login: "root", Type: "root", Status: "active", AuthVersion: 1}, language: "fr"}
+	dependencies := testDependencies(t, users)
+	session, err := dependencies.Sessions.Create(websession.StateAuthenticated, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"_token": {session.CSRFToken}, "language": {"en"}}
+	request := httptest.NewRequest(http.MethodPost, "/go/account/language", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(websession.Cookie(session.ID))
+	response := httptest.NewRecorder()
+	Handler(dependencies).ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/go/account/password?result=language" || users.language != "en" {
+		t.Fatalf("language response=%d stored=%q", response.Code, users.language)
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "aegisadmin_language" || cookies[0].Value != "en" || !cookies[0].Secure {
+		t.Fatalf("language cookie=%#v", cookies)
+	}
+}
+
+func TestLoginUsesConfiguredDefaultLanguage(t *testing.T) {
+	dependencies := testDependencies(t, nil)
+	dependencies.DefaultLanguage = "en"
+	request := httptest.NewRequest(http.MethodGet, "/login", nil)
+	response := httptest.NewRecorder()
+	Handler(dependencies).ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `<html lang="en">`) || !strings.Contains(response.Body.String(), "Access your server administration console.") {
+		t.Fatalf("English login=%d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestAccountAndTwoFactorUseProfileLanguage(t *testing.T) {
+	users := &fakeLoginUsers{user: authstore.User{ID: 1, Login: "root", Type: "root", Status: "active", AuthVersion: 1}, language: "en"}
+	dependencies := testDependencies(t, users)
+	authenticated, err := dependencies.Sessions.Create(websession.StateAuthenticated, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountRequest := httptest.NewRequest(http.MethodGet, "/go/account/password", nil)
+	accountRequest.AddCookie(websession.Cookie(authenticated.ID))
+	accountResponse := httptest.NewRecorder()
+	Handler(dependencies).ServeHTTP(accountResponse, accountRequest)
+	if accountResponse.Code != http.StatusOK || !strings.Contains(accountResponse.Body.String(), `<html lang="en">`) ||
+		!strings.Contains(accountResponse.Body.String(), "Interface language") || !strings.Contains(accountResponse.Body.String(), "Change my password") {
+		t.Fatalf("English account=%d %q", accountResponse.Code, accountResponse.Body.String())
+	}
+
+	users.user.TOTPSecret = sql.NullString{String: "secret", Valid: true}
+	users.user.TOTPEnabledAt = sql.NullString{String: "2026-09-04T10:00:00Z", Valid: true}
+	pending, err := dependencies.Sessions.Create(websession.StateTwoFactor, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challengeRequest := httptest.NewRequest(http.MethodGet, "/go/two-factor", nil)
+	challengeRequest.AddCookie(websession.Cookie(pending.ID))
+	challengeResponse := httptest.NewRecorder()
+	Handler(dependencies).ServeHTTP(challengeResponse, challengeRequest)
+	if challengeResponse.Code != http.StatusOK || !strings.Contains(challengeResponse.Body.String(), "Two-factor authentication") ||
+		!strings.Contains(challengeResponse.Body.String(), "Verification code") {
+		t.Fatalf("English 2FA=%d %q", challengeResponse.Code, challengeResponse.Body.String())
+	}
+}
+
+func TestLoginExplainsRequiredRootInitialization(t *testing.T) {
+	users := &fakeLoginUsers{rootMissing: true}
+	response := httptest.NewRecorder()
+	Handler(testDependencies(t, users)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Initialisation obligatoire") || !strings.Contains(response.Body.String(), "sudo aegisadmin initialize") {
+		t.Fatalf("unexpected uninitialized login response: %d %q", response.Code, response.Body.String())
 	}
 }
 
@@ -253,13 +414,26 @@ func TestLoginFlowRotatesSession(t *testing.T) {
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/go/dashboard" {
 		t.Fatalf("login response = %d, location = %q", response.Code, response.Header().Get("Location"))
 	}
-	rotated := response.Result().Cookies()
-	if len(rotated) != 1 || rotated[0].Value == cookies[0].Value {
-		t.Fatalf("session was not rotated: %#v", rotated)
+	responseCookies := response.Result().Cookies()
+	var rotatedSession *http.Cookie
+	var restoredTheme *http.Cookie
+	for _, cookie := range responseCookies {
+		switch cookie.Name {
+		case websession.CookieName:
+			rotatedSession = cookie
+		case "aegisadmin_theme":
+			restoredTheme = cookie
+		}
+	}
+	if rotatedSession == nil || rotatedSession.Value == cookies[0].Value {
+		t.Fatalf("session was not rotated: %#v", responseCookies)
+	}
+	if restoredTheme == nil || restoredTheme.Value != "dark" || !restoredTheme.Secure {
+		t.Fatalf("profile theme was not restored: %#v", responseCookies)
 	}
 
 	dashboardRequest := httptest.NewRequest(http.MethodGet, "/go/dashboard", nil)
-	dashboardRequest.AddCookie(rotated[0])
+	dashboardRequest.AddCookie(rotatedSession)
 	dashboardResponse := httptest.NewRecorder()
 	handler.ServeHTTP(dashboardResponse, dashboardRequest)
 	if dashboardResponse.Code != http.StatusOK || !strings.Contains(dashboardResponse.Body.String(), "Tableau de bord") ||
@@ -277,14 +451,15 @@ func TestLoginFlowRotatesSession(t *testing.T) {
 		t.Fatal("logout CSRF token is missing")
 	}
 	accountRequest := httptest.NewRequest(http.MethodGet, "/go/account/password", nil)
-	accountRequest.AddCookie(rotated[0])
+	accountRequest.AddCookie(rotatedSession)
 	accountResponse := httptest.NewRecorder()
 	handler.ServeHTTP(accountResponse, accountRequest)
-	if accountResponse.Code != http.StatusOK || !strings.Contains(accountResponse.Body.String(), "Changer mon mot de passe") {
+	if accountResponse.Code != http.StatusOK || !strings.Contains(accountResponse.Body.String(), "Changer mon mot de passe") ||
+		!strings.Contains(accountResponse.Body.String(), `name="language"`) {
 		t.Fatalf("account password response = %d %q", accountResponse.Code, accountResponse.Body.String())
 	}
 	storageRequest := httptest.NewRequest(http.MethodGet, "/storage", nil)
-	storageRequest.AddCookie(rotated[0])
+	storageRequest.AddCookie(rotatedSession)
 	storageResponse := httptest.NewRecorder()
 	handler.ServeHTTP(storageResponse, storageRequest)
 	if storageResponse.Code != http.StatusOK || !strings.Contains(storageResponse.Body.String(), "Stockage") ||
@@ -299,7 +474,7 @@ func TestLoginFlowRotatesSession(t *testing.T) {
 	logoutForm := url.Values{"_token": {logoutToken[1]}}
 	logoutRequest := httptest.NewRequest(http.MethodPost, "/logout", strings.NewReader(logoutForm.Encode()))
 	logoutRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	logoutRequest.AddCookie(rotated[0])
+	logoutRequest.AddCookie(rotatedSession)
 	logoutResponse := httptest.NewRecorder()
 	handler.ServeHTTP(logoutResponse, logoutRequest)
 	if logoutResponse.Code != http.StatusSeeOther || logoutResponse.Header().Get("Location") != "/login" ||
@@ -307,7 +482,7 @@ func TestLoginFlowRotatesSession(t *testing.T) {
 		t.Fatalf("unexpected logout response: %d %#v", logoutResponse.Code, logoutResponse.Result().Cookies())
 	}
 	afterLogout := httptest.NewRequest(http.MethodGet, "/go/dashboard", nil)
-	afterLogout.AddCookie(rotated[0])
+	afterLogout.AddCookie(rotatedSession)
 	afterLogoutResponse := httptest.NewRecorder()
 	handler.ServeHTTP(afterLogoutResponse, afterLogout)
 	if afterLogoutResponse.Code != http.StatusSeeOther || afterLogoutResponse.Header().Get("Location") != "/login" {
@@ -334,7 +509,7 @@ func TestStorageRejectsDirectAccessWithoutPermission(t *testing.T) {
 }
 
 func TestServicesConsultationHidesActionsAndRejectsRestart(t *testing.T) {
-	users := &fakeLoginUsers{servicesPermission: "view", user: authstore.User{
+	users := &fakeLoginUsers{servicesPermission: "view", language: "en", user: authstore.User{
 		ID: 10, Login: "reader", Type: "user", Status: "active", AuthVersion: 1,
 	}}
 	dependencies := testDependencies(t, users)
@@ -347,7 +522,8 @@ func TestServicesConsultationHidesActionsAndRejectsRestart(t *testing.T) {
 	response := httptest.NewRecorder()
 	Handler(dependencies).ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "apache2") ||
-		strings.Contains(response.Body.String(), "Redémarrer") {
+		!strings.Contains(response.Body.String(), "Authorized services") || !strings.Contains(response.Body.String(), "Automatic startup") ||
+		strings.Contains(response.Body.String(), "Restart") || strings.Contains(response.Body.String(), "Services autorisés") {
 		t.Fatalf("consultation response = %d %q", response.Code, response.Body.String())
 	}
 
@@ -383,7 +559,7 @@ func TestServicesActionCanRestart(t *testing.T) {
 }
 
 func TestNetworkRequiresPermissionAndRendersDetails(t *testing.T) {
-	users := &fakeLoginUsers{networkPermission: "view", user: authstore.User{ID: 12, Login: "reader", Type: "user", Status: "active", AuthVersion: 1}}
+	users := &fakeLoginUsers{networkPermission: "view", language: "en", user: authstore.User{ID: 12, Login: "reader", Type: "user", Status: "active", AuthVersion: 1}}
 	dependencies := testDependencies(t, users)
 	session, err := dependencies.Sessions.Create(websession.StateAuthenticated, users.user.ID, users.user.AuthVersion)
 	if err != nil {
@@ -394,7 +570,8 @@ func TestNetworkRequiresPermissionAndRendersDetails(t *testing.T) {
 	response := httptest.NewRecorder()
 	Handler(dependencies).ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "192.0.2.2/24") || !strings.Contains(response.Body.String(), "00:11:22:33:44:55") ||
-		!strings.Contains(response.Body.String(), `class="network-selected-button" aria-current="true">Sélectionnée</span>`) {
+		!strings.Contains(response.Body.String(), `class="network-selected-button" aria-current="true">Selected</span>`) ||
+		!strings.Contains(response.Body.String(), "Detected interfaces") || strings.Contains(response.Body.String(), "Sélectionnée") {
 		t.Fatalf("network response = %d %q", response.Code, response.Body.String())
 	}
 
@@ -407,7 +584,7 @@ func TestNetworkRequiresPermissionAndRendersDetails(t *testing.T) {
 }
 
 func TestLogsRequiresPermissionAndEscapesContent(t *testing.T) {
-	users := &fakeLoginUsers{logsPermission: "view", user: authstore.User{ID: 13, Login: "reader", Type: "user", Status: "active", AuthVersion: 1}}
+	users := &fakeLoginUsers{logsPermission: "view", language: "en", user: authstore.User{ID: 13, Login: "reader", Type: "user", Status: "active", AuthVersion: 1}}
 	dependencies := testDependencies(t, users)
 	session, err := dependencies.Sessions.Create(websession.StateAuthenticated, users.user.ID, users.user.AuthVersion)
 	if err != nil {
@@ -421,7 +598,10 @@ func TestLogsRequiresPermissionAndEscapesContent(t *testing.T) {
 		!strings.Contains(response.Body.String(), "apache2/error.log") ||
 		!strings.Contains(response.Body.String(), `name="level"`) ||
 		!strings.Contains(response.Body.String(), `value="test"`) ||
-		!strings.Contains(response.Body.String(), `href="/logs?source=apache2%2Ferror.log"`) {
+		!strings.Contains(response.Body.String(), `href="/logs?source=apache2%2Ferror.log"`) ||
+		!strings.Contains(response.Body.String(), "Selection and search") ||
+		!strings.Contains(response.Body.String(), "1 line displayed out of the latest 100") ||
+		strings.Contains(response.Body.String(), "Sélection et recherche") {
 		t.Fatalf("logs response = %d %q", response.Code, response.Body.String())
 	}
 	users.logsPermission = ""
@@ -445,25 +625,25 @@ func TestFilterLogLinesByLevelAndKeyword(t *testing.T) {
 
 func TestSnapshotPresentationStructuresAndEscapesData(t *testing.T) {
 	sections := []any{map[string]any{"id": "system", "label": "Système", "available": true, "data": map[string]any{"hostname": "serveur<script>", "active": true, "addresses": []any{"192.0.2.1"}}}}
-	rendered := renderSnapshotSections(sections)
+	rendered := renderSnapshotSections(sections, "fr")
 	if !strings.Contains(rendered, `href="#snapshot-section-0"`) ||
 		!strings.Contains(rendered, "serveur&lt;script&gt;") ||
 		!strings.Contains(rendered, "Actif") ||
 		strings.Contains(rendered, "serveur<script>") {
 		t.Fatalf("snapshot rendering = %q", rendered)
 	}
-	comparison := renderComparisonSections([]any{map[string]any{"label": "PHP", "status": "different", "source": map[string]any{"version": "8.4"}, "target": map[string]any{"version": "8.5"}}})
+	comparison := renderComparisonSections([]any{map[string]any{"label": "PHP", "status": "different", "source": map[string]any{"version": "8.4"}, "target": map[string]any{"version": "8.5"}}}, "fr")
 	if !strings.Contains(comparison, "Modifiée") || !strings.Contains(comparison, "Snapshot source") || !strings.Contains(comparison, "8.5") {
 		t.Fatalf("comparison rendering = %q", comparison)
 	}
-	identical := renderComparisonSections([]any{map[string]any{"label": "PHP", "status": "identical"}})
+	identical := renderComparisonSections([]any{map[string]any{"label": "PHP", "status": "identical"}}, "fr")
 	if !strings.Contains(identical, "Aucune différence") || strings.Contains(identical, "<h2>PHP</h2>") {
 		t.Fatalf("identical sections should be hidden: %q", identical)
 	}
 }
 
 func TestRenderSnapshotsUsesOneTableRowPerSnapshot(t *testing.T) {
-	rendered := renderSnapshots(map[string]any{"snapshots": []any{map[string]any{"id": "snapshot-id", "name": "Référence", "created_at": "2026-08-25T12:00:00Z", "source": "local", "valid": true, "available_sections": 13, "total_sections": 14, "size": 2048}}}, "token")
+	rendered := renderSnapshots(map[string]any{"snapshots": []any{map[string]any{"id": "snapshot-id", "name": "Référence", "created_at": "2026-08-25T12:00:00Z", "source": "local", "valid": true, "available_sections": 13, "total_sections": 14, "size": 2048}}}, "token", "fr")
 	if !strings.Contains(rendered, `<table class="data-table snapshot-table">`) ||
 		!strings.Contains(rendered, `<th>Actions</th><th>Nom</th>`) ||
 		strings.Count(rendered, `<tr>`) != 2 ||
@@ -476,6 +656,7 @@ func TestStructuredDifferencesHideUnchangedValues(t *testing.T) {
 	rendered := renderStructuredDifferences(
 		map[string]any{"hostname": "server", "service": map[string]any{"active": true, "version": "1.0"}},
 		map[string]any{"hostname": "server", "service": map[string]any{"active": true, "version": "2.0"}},
+		"fr",
 	)
 	if !strings.Contains(rendered, "Service › Version") || !strings.Contains(rendered, "1.0") || !strings.Contains(rendered, "2.0") ||
 		strings.Contains(rendered, "Hostname") || strings.Contains(rendered, "Actif") {
@@ -492,12 +673,12 @@ func TestStructuredDifferencesMatchListsByIdentityAndIgnoreOrder(t *testing.T) {
 		map[string]any{"name": "appstream", "version": "0.25build1"},
 		map[string]any{"name": "apt", "version": "3.2.1"},
 	}}
-	rendered := renderStructuredDifferences(source, target)
+	rendered := renderStructuredDifferences(source, target, "fr")
 	if !strings.Contains(rendered, "Nom apt › Version") || !strings.Contains(rendered, "3.2.0") || !strings.Contains(rendered, "3.2.1") ||
 		strings.Contains(rendered, "appstream") || strings.Contains(rendered, "Élément 1") {
 		t.Fatalf("identity-aware differences = %q", rendered)
 	}
-	if reordered := renderStructuredDifferences([]any{"b", "a"}, []any{"a", "b"}); !strings.Contains(reordered, "Aucune valeur différente") {
+	if reordered := renderStructuredDifferences([]any{"b", "a"}, []any{"a", "b"}, "fr"); !strings.Contains(reordered, "Aucune valeur différente") {
 		t.Fatalf("scalar order should be ignored: %q", reordered)
 	}
 }
@@ -513,7 +694,7 @@ func TestStructuredDifferencesMatchApacheVirtualHostsByConfigFile(t *testing.T) 
 		map[string]any{"config_file": "/etc/apache2/sites-enabled/default.conf", "server_name": "", "port": 80, "config_id": "default-hash", "document_root": "/var/www/html"},
 		map[string]any{"config_file": "/etc/apache2/sites-enabled/shared.conf", "server_name": "app.example", "port": 80, "config_id": "app-hash", "document_root": "/srv/www/app"},
 	}
-	rendered := renderStructuredDifferences(source, target)
+	rendered := renderStructuredDifferences(source, target, "fr")
 	if !strings.Contains(rendered, "VirtualHost shared.conf · app.example · port 80 › Racine du site") ||
 		!strings.Contains(rendered, "/var/www/app") || !strings.Contains(rendered, "/srv/www/app") ||
 		strings.Contains(rendered, "blog.example") || strings.Contains(rendered, "default.conf") || strings.Contains(rendered, "Élément 1") {
@@ -524,7 +705,7 @@ func TestStructuredDifferencesMatchApacheVirtualHostsByConfigFile(t *testing.T) 
 func TestStructuredDifferencesMatchCronJobsWithoutLineNoise(t *testing.T) {
 	source := []any{map[string]any{"id": "readonly-old", "source": "/etc/crontab", "user": "root", "schedule": "@daily", "command": "/usr/local/bin/backup", "line": 12, "managed": false}}
 	target := []any{map[string]any{"id": "readonly-new", "source": "/etc/crontab", "user": "root", "schedule": "@hourly", "command": "/usr/local/bin/backup", "line": 18, "managed": false}}
-	rendered := renderStructuredDifferences(source, target)
+	rendered := renderStructuredDifferences(source, target, "fr")
 	if !strings.Contains(rendered, "Tâche root · /usr/local/bin/backup › Schedule") ||
 		!strings.Contains(rendered, "@daily") || !strings.Contains(rendered, "@hourly") ||
 		strings.Contains(rendered, "readonly-old") || strings.Contains(rendered, "Line") {
@@ -535,7 +716,7 @@ func TestStructuredDifferencesMatchCronJobsWithoutLineNoise(t *testing.T) {
 func TestStructuredDifferencesRecognizeCronMigrationToManagedTask(t *testing.T) {
 	source := []any{map[string]any{"id": "legacy-hash", "source": "/var/spool/cron/crontabs/www-data", "user": "www-data", "schedule": "45 1 * * *", "command": "curl https://example.com/maintenance.php", "line": 3, "managed": false, "enabled": true, "editable": true}}
 	target := []any{map[string]any{"id": "7391c994-dc56-42a2-b2af-edc1fd35ad9d", "source": "/var/spool/cron/crontabs/www-data", "user": "www-data", "schedule": "45 1 * * *", "command": "curl https://example.com/maintenance.php", "line": 4, "managed": true, "enabled": true, "editable": true}}
-	rendered := renderStructuredDifferences(source, target)
+	rendered := renderStructuredDifferences(source, target, "fr")
 	if strings.Count(rendered, "Tâche www-data · curl https://example.com/maintenance.php") != 1 ||
 		!strings.Contains(rendered, "Managed") || !strings.Contains(rendered, "Non") || !strings.Contains(rendered, "Oui") ||
 		strings.Contains(rendered, "7391c994") || strings.Contains(rendered, "Command") || strings.Contains(rendered, "Absent") {
@@ -548,7 +729,7 @@ func TestStructuredDifferencesIgnoreFirewallRenumbering(t *testing.T) {
 	rule443 := map[string]any{"id": 2, "action": "allow", "direction": "in", "protocol": "tcp", "ports": []any{"443"}, "source": "any", "destination": "any", "family": "ipv4"}
 	reordered22 := map[string]any{"id": 2, "action": "allow", "direction": "in", "protocol": "tcp", "ports": []any{"22"}, "source": "any", "destination": "any", "family": "ipv4"}
 	reordered443 := map[string]any{"id": 1, "action": "allow", "direction": "in", "protocol": "tcp", "ports": []any{"443"}, "source": "any", "destination": "any", "family": "ipv4"}
-	rendered := renderStructuredDifferences([]any{rule22, rule443}, []any{reordered443, reordered22})
+	rendered := renderStructuredDifferences([]any{rule22, rule443}, []any{reordered443, reordered22}, "fr")
 	if !strings.Contains(rendered, "Aucune valeur différente") || strings.Contains(rendered, "Identifiant") {
 		t.Fatalf("firewall renumbering = %q", rendered)
 	}
@@ -557,11 +738,11 @@ func TestStructuredDifferencesIgnoreFirewallRenumbering(t *testing.T) {
 func TestStructuredDifferencesNormalizeLegacyListeners(t *testing.T) {
 	source := []any{"tcp LISTEN 0 5 127.0.0.1:555 0.0.0.0:*", "tcp LISTEN 0 511 *:8443 *:*"}
 	target := []any{map[string]any{"protocol": "tcp", "state": "LISTEN", "address": "*", "port": "8443"}, map[string]any{"protocol": "tcp", "state": "LISTEN", "address": "127.0.0.1", "port": "555"}}
-	rendered := renderStructuredDifferences(source, target)
+	rendered := renderStructuredDifferences(source, target, "fr")
 	if !strings.Contains(rendered, "Aucune valeur différente") || strings.Contains(rendered, "Valeur tcp") {
 		t.Fatalf("listener normalization = %q", rendered)
 	}
-	added := renderStructuredDifferences(source, append(target, map[string]any{"protocol": "tcp", "state": "LISTEN", "address": "127.0.0.1", "port": "9080"}))
+	added := renderStructuredDifferences(source, append(target, map[string]any{"protocol": "tcp", "state": "LISTEN", "address": "127.0.0.1", "port": "9080"}), "fr")
 	if !strings.Contains(added, "Écoute tcp 127.0.0.1:9080") || strings.Contains(added, "127.0.0.1:555") {
 		t.Fatalf("listener addition = %q", added)
 	}
@@ -572,13 +753,13 @@ func TestSnapshotComparisonOptionsUseNamesAndDistinctDefaults(t *testing.T) {
 		map[string]any{"id": "new", "name": "Après mise à jour", "created_at": "2026-08-25T12:00:00Z", "valid": true},
 		map[string]any{"id": "old", "name": "Avant mise à jour", "created_at": "2026-08-24T12:00:00Z", "valid": true},
 	}}
-	source, target, disabled := renderSnapshotCompareOptions(data)
+	source, target, disabled := renderSnapshotCompareOptions(data, "fr")
 	if disabled != "" || !strings.Contains(source, `value="old" selected`) ||
 		!strings.Contains(target, `value="new" selected`) ||
 		!strings.Contains(source, "Avant mise à jour") {
 		t.Fatalf("source=%q target=%q disabled=%q", source, target, disabled)
 	}
-	_, _, disabled = renderSnapshotCompareOptions(map[string]any{"snapshots": []any{map[string]any{"id": "only", "valid": true}}})
+	_, _, disabled = renderSnapshotCompareOptions(map[string]any{"snapshots": []any{map[string]any{"id": "only", "valid": true}}}, "fr")
 	if disabled != " disabled" {
 		t.Fatalf("single snapshot comparison should be disabled: %q", disabled)
 	}
@@ -601,7 +782,7 @@ func TestAboutUsesApplicationVersionAndIsAvailableToUser(t *testing.T) {
 }
 
 func TestPHPConsultationHidesRestartAndActionAllowsIt(t *testing.T) {
-	users := &fakeLoginUsers{phpPermission: "view", user: authstore.User{ID: 15, Login: "operator", Type: "user", Status: "active", AuthVersion: 1}}
+	users := &fakeLoginUsers{phpPermission: "view", language: "en", user: authstore.User{ID: 15, Login: "operator", Type: "user", Status: "active", AuthVersion: 1}}
 	dependencies := testDependencies(t, users)
 	session, err := dependencies.Sessions.Create(websession.StateAuthenticated, 15, 1)
 	if err != nil {
@@ -611,7 +792,10 @@ func TestPHPConsultationHidesRestartAndActionAllowsIt(t *testing.T) {
 	get.AddCookie(websession.Cookie(session.ID))
 	response := httptest.NewRecorder()
 	Handler(dependencies).ServeHTTP(response, get)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "8.5.9") || strings.Contains(response.Body.String(), "Redémarrer") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "8.5.9") ||
+		!strings.Contains(response.Body.String(), "PHP CLI and PHP-FPM monitoring") ||
+		!strings.Contains(response.Body.String(), "Automatic startup") ||
+		strings.Contains(response.Body.String(), "Restart") || strings.Contains(response.Body.String(), "Démarrage automatique") {
 		t.Fatalf("PHP consultation = %d %q", response.Code, response.Body.String())
 	}
 	users.phpPermission = "action"
@@ -627,7 +811,7 @@ func TestPHPConsultationHidesRestartAndActionAllowsIt(t *testing.T) {
 }
 
 func TestMySQLConsultationHidesRestartAndActionAllowsIt(t *testing.T) {
-	users := &fakeLoginUsers{mysqlPermission: "view", user: authstore.User{ID: 16, Login: "operator", Type: "user", Status: "active", AuthVersion: 1}}
+	users := &fakeLoginUsers{mysqlPermission: "view", language: "en", user: authstore.User{ID: 16, Login: "operator", Type: "user", Status: "active", AuthVersion: 1}}
 	d := testDependencies(t, users)
 	session, err := d.Sessions.Create(websession.StateAuthenticated, 16, 1)
 	if err != nil {
@@ -637,7 +821,11 @@ func TestMySQLConsultationHidesRestartAndActionAllowsIt(t *testing.T) {
 	get.AddCookie(websession.Cookie(session.ID))
 	response := httptest.NewRecorder()
 	Handler(d).ServeHTTP(response, get)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "MariaDB 11.8") || strings.Contains(response.Body.String(), "Redémarrer MariaDB") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "MariaDB 11.8") ||
+		!strings.Contains(response.Body.String(), "Database server monitoring") ||
+		!strings.Contains(response.Body.String(), "Active connections") ||
+		!strings.Contains(response.Body.String(), "1.0 KiB") ||
+		strings.Contains(response.Body.String(), "Restart MariaDB") || strings.Contains(response.Body.String(), "Connexions actives") {
 		t.Fatalf("mysql consultation=%d %q", response.Code, response.Body.String())
 	}
 	users.mysqlPermission = "action"
@@ -653,7 +841,7 @@ func TestMySQLConsultationHidesRestartAndActionAllowsIt(t *testing.T) {
 }
 
 func TestTorConsultationHidesActionsAndActionAllowsReload(t *testing.T) {
-	users := &fakeLoginUsers{torPermission: "view", user: authstore.User{ID: 17, Login: "operator", Type: "user", Status: "active", AuthVersion: 1}}
+	users := &fakeLoginUsers{torPermission: "view", language: "en", user: authstore.User{ID: 17, Login: "operator", Type: "user", Status: "active", AuthVersion: 1}}
 	d := testDependencies(t, users)
 	session, err := d.Sessions.Create(websession.StateAuthenticated, 17, 1)
 	if err != nil {
@@ -663,7 +851,12 @@ func TestTorConsultationHidesActionsAndActionAllowsReload(t *testing.T) {
 	get.AddCookie(websession.Cookie(session.ID))
 	response := httptest.NewRecorder()
 	Handler(d).ServeHTTP(response, get)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Tor 0.4.8") || strings.Contains(response.Body.String(), "Recharger Tor") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Tor 0.4.8") ||
+		!strings.Contains(response.Body.String(), "Tor instance and Onion services monitoring") ||
+		!strings.Contains(response.Body.String(), "The Tor configuration is valid.") ||
+		!strings.Contains(response.Body.String(), "1.0 KiB") ||
+		!strings.Contains(response.Body.String(), "Onion service") ||
+		strings.Contains(response.Body.String(), "Reload Tor") || strings.Contains(response.Body.String(), "Service Onion") {
 		t.Fatalf("tor consultation=%d %q", response.Code, response.Body.String())
 	}
 	users.torPermission = "action"
@@ -679,7 +872,7 @@ func TestTorConsultationHidesActionsAndActionAllowsReload(t *testing.T) {
 }
 
 func TestApacheConsultationHidesActionsAndActionAllowsReload(t *testing.T) {
-	users := &fakeLoginUsers{apachePermission: "view", user: authstore.User{ID: 18, Login: "operator", Type: "user", Status: "active", AuthVersion: 1}}
+	users := &fakeLoginUsers{apachePermission: "view", language: "en", user: authstore.User{ID: 18, Login: "operator", Type: "user", Status: "active", AuthVersion: 1}}
 	d := testDependencies(t, users)
 	session, err := d.Sessions.Create(websession.StateAuthenticated, 18, 1)
 	if err != nil {
@@ -689,7 +882,11 @@ func TestApacheConsultationHidesActionsAndActionAllowsReload(t *testing.T) {
 	get.AddCookie(websession.Cookie(session.ID))
 	response := httptest.NewRecorder()
 	Handler(d).ServeHTTP(response, get)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "2.4.65") || strings.Contains(response.Body.String(), "Recharger Apache") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "2.4.65") ||
+		!strings.Contains(response.Body.String(), "HTTP server monitoring") ||
+		!strings.Contains(response.Body.String(), "Loaded VirtualHosts") ||
+		!strings.Contains(response.Body.String(), "Read only") ||
+		strings.Contains(response.Body.String(), "Reload Apache") || strings.Contains(response.Body.String(), "Sites actifs") {
 		t.Fatalf("apache consultation=%d %q", response.Code, response.Body.String())
 	}
 	users.apachePermission = "action"
@@ -703,6 +900,12 @@ func TestApacheConsultationHidesActionsAndActionAllowsReload(t *testing.T) {
 		t.Fatalf("apache action=%d %q", done.Code, users.apacheAction)
 	}
 	users.apachePermission = "modify"
+	modifyPage := httptest.NewRecorder()
+	Handler(d).ServeHTTP(modifyPage, get)
+	if modifyPage.Code != http.StatusOK || !strings.Contains(modifyPage.Body.String(), "Add a site") ||
+		!strings.Contains(modifyPage.Body.String(), "Add an Apache site") || strings.Contains(modifyPage.Body.String(), "Ajouter un site") {
+		t.Fatalf("Apache modify page=%d %q", modifyPage.Code, modifyPage.Body.String())
+	}
 	configID := strings.Repeat("a", 64)
 	configRequest := httptest.NewRequest(http.MethodGet, "/apache/sites/"+configID, nil)
 	configRequest.AddCookie(websession.Cookie(session.ID))
@@ -736,7 +939,7 @@ func TestCertbotIssueValuesNormalizeDomainsAndExplainInvalidValues(t *testing.T)
 }
 
 func TestRenderCertificatesPlacesActionMenuFirst(t *testing.T) {
-	row := renderCertificates([]webcertbot.Certificate{{Name: "example.org", Domains: []string{"example.org"}, Valid: true, DaysRemaining: 60}}, "token", true)
+	row := renderCertificates([]webcertbot.Certificate{{Name: "example.org", Domains: []string{"example.org"}, Valid: true, DaysRemaining: 60}}, "token", true, "fr")
 	action := strings.Index(row, `data-certbot-certificate-action`)
 	name := strings.Index(row, `<th>example.org</th>`)
 	if action < 0 || name < 0 || action > name || strings.Contains(row, `danger-button`) {
@@ -748,8 +951,19 @@ func TestRenderCertificatesSortsByDomains(t *testing.T) {
 	rows := renderCertificates([]webcertbot.Certificate{
 		{Name: "zeta", Domains: []string{"zeta.example"}, Valid: true},
 		{Name: "alpha", Domains: []string{"alpha.example"}, Valid: true},
-	}, "token", false)
+	}, "token", false, "fr")
 	if alpha, zeta := strings.Index(rows, "alpha.example"), strings.Index(rows, "zeta.example"); alpha < 0 || zeta < 0 || alpha > zeta {
+		t.Fatalf("certificate rows=%q", rows)
+	}
+}
+
+func TestCronLibraryAndCertificatesUseEnglish(t *testing.T) {
+	library := renderBackupLibrary("token", `<option>root</option>`, "en")
+	if !strings.Contains(library, "Cron task library") || strings.Contains(library, "Bibliothèque de tâches Cron") {
+		t.Fatalf("cron library=%q", library)
+	}
+	rows := renderCertificates([]webcertbot.Certificate{{Name: "example.org", Domains: []string{"example.org"}, Valid: true, DaysRemaining: 60}}, "token", true, "en")
+	if !strings.Contains(rows, "Valid") || !strings.Contains(rows, "60 d") || strings.Contains(rows, "Réinstaller") {
 		t.Fatalf("certificate rows=%q", rows)
 	}
 }
@@ -832,7 +1046,7 @@ func TestFirewallRightsSeparateActionsAndModification(t *testing.T) {
 }
 
 func TestRenderFirewallRulesSortsPortsAndPlacesActionFirst(t *testing.T) {
-	rows := renderFirewallRulesWithServices([]webfirewall.Rule{{ID: 1, Protocol: "tcp", Ports: []string{"9080"}}, {ID: 2, Protocol: "tcp", Ports: []string{"22"}}}, "token", true, map[string]string{"22/tcp": "ssh"})
+	rows := renderFirewallRulesWithServices([]webfirewall.Rule{{ID: 1, Protocol: "tcp", Ports: []string{"9080"}}, {ID: 2, Protocol: "tcp", Ports: []string{"22"}}}, "token", true, map[string]string{"22/tcp": "ssh"}, "fr")
 	port22, port9080 := strings.Index(rows, ">22 (ssh)</td>"), strings.Index(rows, ">9080</td>")
 	deleteAction, firstID := strings.Index(rows, `action="/firewall/delete"`), strings.Index(rows, `<th>2</th>`)
 	if port22 < 0 || port9080 < 0 || port22 > port9080 || deleteAction < 0 || deleteAction > firstID {
@@ -856,9 +1070,67 @@ func TestFirewallProfileIsDisplayedWhenPortsAreEmpty(t *testing.T) {
 	if target := formatFirewallRuleTarget(rule, map[string]string{}); target != "Apache Full" {
 		t.Fatalf("profile target=%q", target)
 	}
-	rows := renderFirewallRulesWithServices([]webfirewall.Rule{rule}, "token", false, map[string]string{})
+	rows := renderFirewallRulesWithServices([]webfirewall.Rule{rule}, "token", false, map[string]string{}, "fr")
 	if !strings.Contains(rows, ">Apache Full</td>") {
 		t.Fatalf("firewall profile row=%q", rows)
+	}
+}
+
+func TestFail2banAndFirewallRowsUseEnglish(t *testing.T) {
+	selector := renderJailSelector([]string{"sshd"}, "sshd", "en")
+	_, actions := renderJail(webfail2ban.Snapshot{Selected: "sshd", Jail: &webfail2ban.Jail{CurrentlyBanned: 1, BannedIPs: []string{"192.0.2.4"}}}, "token", true, "en")
+	if !strings.Contains(selector, ">Show</button>") || !strings.Contains(actions, ">Unban</button>") || strings.Contains(actions, "Débannir") {
+		t.Fatalf("selector=%q actions=%q", selector, actions)
+	}
+	rows := renderFirewallRulesWithServices([]webfirewall.Rule{{ID: 1, Protocol: "tcp", Ports: []string{"443"}}}, "token", true, map[string]string{"443/tcp": "https"}, "en")
+	if !strings.Contains(rows, ">Delete</button>") || strings.Contains(rows, ">Supprimer</button>") {
+		t.Fatalf("firewall rows=%q", rows)
+	}
+}
+
+func TestUpdatesUseEnglish(t *testing.T) {
+	page := localizeUpdatesHTML(`<html lang="fr"><h1>Mises à jour</h1><h2>Paquets disponibles</h2><p>Sécurité</p><p>Installation des mises à jour</p>`, "en")
+	if !strings.Contains(page, `lang="en"`) || !strings.Contains(page, "Available packages") || !strings.Contains(page, "Security") || strings.Contains(page, "Mises à jour") {
+		t.Fatalf("updates page=%q", page)
+	}
+	rows := renderUpdates([]webupdates.Update{{Name: "example", Security: true}}, "en")
+	if !strings.Contains(rows, ">Yes</td>") {
+		t.Fatalf("updates rows=%q", rows)
+	}
+}
+
+func TestUsersUseEnglish(t *testing.T) {
+	page := localizeUsersHTML(`<html lang="fr"><h1>Utilisateurs</h1><p>Comptes enregistrés</p><button>Nouvel utilisateur</button><h2>Sécurité</h2><span>Consultation</span>`, "en")
+	for _, expected := range []string{`lang="en"`, "Users", "Registered accounts", "New user", "Security", "View"} {
+		if !strings.Contains(page, expected) {
+			t.Fatalf("missing %q in %q", expected, page)
+		}
+	}
+}
+
+func TestModulesAndSettingsUseEnglish(t *testing.T) {
+	modules := localizeModulesHTML(`<html lang="fr"><h2>Organisation du menu</h2><input placeholder="Nouvelle catégorie"><button>Ajouter</button>`, "en")
+	if !strings.Contains(modules, "Menu organization") || !strings.Contains(modules, "New category") || strings.Contains(modules, "Organisation du menu") {
+		t.Fatalf("modules=%q", modules)
+	}
+	navigation := renderAdminNavigation([]authstore.AdminCategory{{ID: 1, Name: "Sécurité", Modules: []authstore.AdminModule{}}}, "token", "en")
+	if !strings.Contains(navigation, `value="Sécurité"`) || !strings.Contains(navigation, "Delete category") {
+		t.Fatalf("navigation=%q", navigation)
+	}
+	settings := localizeSettingsHTML(`<html lang="fr"><h1>Paramètres</h1><h2>Serveur de messagerie SMTP</h2><span>Mot de passe enregistré</span><button>Restaurer la sauvegarde</button>`, "en")
+	if !strings.Contains(settings, "SMTP mail server") || !strings.Contains(settings, "Password saved") || !strings.Contains(settings, "Restore backup") || strings.Contains(settings, "Paramètres") {
+		t.Fatalf("settings=%q", settings)
+	}
+}
+
+func TestConfigurationUsesEnglishAndPreservesSnapshotName(t *testing.T) {
+	template := localizeConfigurationTemplate(`<html lang="fr"><h1>Configuration serveur</h1><h2>Comparer des snapshots</h2>`, "en")
+	if !strings.Contains(template, "Server configuration") || !strings.Contains(template, "Compare snapshots") || strings.Contains(template, `lang="fr"`) {
+		t.Fatalf("configuration template=%q", template)
+	}
+	rows := renderSnapshots(map[string]any{"snapshots": []any{map[string]any{"id": "snapshot-id", "name": "Référence France", "created_at": "2026-08-25T12:00:00Z", "source": "local", "valid": true, "available_sections": 14, "total_sections": 14, "size": 2048}}}, "token", "en")
+	if !strings.Contains(rows, `value="Référence France"`) || !strings.Contains(rows, ">Open</a>") || !strings.Contains(rows, ">Valid</span>") {
+		t.Fatalf("configuration rows=%q", rows)
 	}
 }
 
@@ -904,16 +1176,30 @@ func TestCronRightsSeparateActionsAndModification(t *testing.T) {
 }
 
 func TestCronStateIsFirstAndMySQLQueriesUseFrenchThousands(t *testing.T) {
-	row := renderCronJobs([]webcron.Job{{User: "deploy", Enabled: true}}, "token", "view")
+	row := renderCronJobs([]webcron.Job{{User: "deploy", Enabled: true}}, "token", "view", "fr")
 	if state, user := strings.Index(row, "status-badge"), strings.Index(row, "<th>deploy</th>"); state < 0 || user < 0 || state > user {
 		t.Fatalf("cron row=%q", row)
 	}
 	if formatted := formatFrenchInteger(1234567); formatted != "1\u202f234\u202f567" {
 		t.Fatalf("formatted=%q", formatted)
 	}
-	metrics := renderMySQLMetrics(map[string]int64{"queries": 1234567})
+	metrics := renderMySQLMetrics(map[string]int64{"queries": 1234567}, "fr")
 	if !strings.Contains(metrics, "1\u202f234\u202f567") {
 		t.Fatalf("metrics=%q", metrics)
+	}
+	if english := renderMySQLMetrics(map[string]int64{"queries": 1234567}, "en"); !strings.Contains(english, "1,234,567") {
+		t.Fatalf("English metrics=%q", english)
+	}
+}
+
+func TestDashboardCardsAndCronRowsUseEnglish(t *testing.T) {
+	cards := localizeDashboardCards([]webdashboard.Card{{ID: "memory", Title: "Mémoire", Value: "42,5 %", Subtitle: "1,0 Gio disponibles · 2,0 Gio utilisés sur 3,0 Gio"}}, "en")
+	if cards[0].Title != "Memory" || cards[0].Value != "42.5 %" || !strings.Contains(cards[0].Subtitle, "1.0 GiB available") {
+		t.Fatalf("English dashboard card=%#v", cards[0])
+	}
+	row := renderCronJobs([]webcron.Job{{User: "deploy", Enabled: false, Editable: false}}, "token", "action", "en")
+	if !strings.Contains(row, "Suspended") || !strings.Contains(row, "Read only") || strings.Contains(row, "Suspendue") {
+		t.Fatalf("English Cron row=%q", row)
 	}
 }
 
@@ -1152,6 +1438,9 @@ func testDependencies(t *testing.T, users *fakeLoginUsers) Dependencies {
 
 type fakeLoginUsers struct {
 	user               authstore.User
+	theme              string
+	language           string
+	rootMissing        bool
 	denyStorage        bool
 	servicesPermission string
 	networkPermission  string
@@ -1189,7 +1478,24 @@ func (f *fakeLoginUsers) FindByLogin(_ context.Context, login string) (authstore
 	return f.user, strings.EqualFold(login, f.user.Login), nil
 }
 func (f *fakeLoginUsers) FindRoot(context.Context) (authstore.User, bool, error) {
-	return f.user, true, nil
+	return f.user, !f.rootMissing, nil
+}
+func (f *fakeLoginUsers) ThemeForUser(context.Context, int64) (string, error) {
+	if f.theme == "" {
+		return "dark", nil
+	}
+	return f.theme, nil
+}
+func (f *fakeLoginUsers) SetTheme(_ context.Context, _ int64, theme string) error {
+	f.theme = theme
+	return nil
+}
+func (f *fakeLoginUsers) LanguageForUser(context.Context, int64) (string, error) {
+	return f.language, nil
+}
+func (f *fakeLoginUsers) SetLanguage(_ context.Context, _ int64, language string) error {
+	f.language = language
+	return nil
 }
 func (f *fakeLoginUsers) FindByID(_ context.Context, id int64) (authstore.User, bool, error) {
 	return f.user, id == f.user.ID, nil

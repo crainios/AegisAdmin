@@ -15,7 +15,7 @@
 
   <section>
     <h2>1. Vérifier la machine</h2>
-    <p>La livraison actuellement publiée est destinée aux systèmes Debian ou Ubuntu utilisant systemd, APT et l’architecture <code>amd64</code>.</p>
+    <p>La livraison actuellement publiée est destinée aux systèmes Debian ou Ubuntu utilisant systemd, APT et l’architecture <code>amd64</code>. Apache est facultatif et n’est jamais installé automatiquement par AegisAdmin.</p>
     <pre><code>dpkg --print-architecture
 ps -p 1 -o comm=</code></pre>
     <p>Résultats attendus :</p>
@@ -100,7 +100,7 @@ dpkg-deb --info aegisadmin_*_amd64.deb</code></pre>
       <li>le serveur web Go non privilégié ;</li>
       <li>le backend système Go privilégié ;</li>
       <li>les services systemd correspondants ;</li>
-      <li>un accès Apache HTTPS de secours sur le port <code>8443</code> ;</li>
+      <li>une écoute HTTPS Go directe sur <code>8443</code> sans Apache, ou un proxy Apache vers <code>127.0.0.1:9080</code> lorsqu’il est présent ;</li>
       <li>une paire TLS locale et une base SQLite ;</li>
       <li>les migrations et les outils d’administration.</li>
     </ul>
@@ -111,10 +111,13 @@ dpkg-deb --info aegisadmin_*_amd64.deb</code></pre>
     <h2>6. Initialiser le compte administrateur</h2>
     <p>Cette opération est nécessaire uniquement lors d’une installation réellement neuve :</p>
     <pre><code>sudo aegisadmin initialize</code></pre>
-    <p>L’outil demande le prénom, le nom, l’adresse e-mail, puis le mot de passe et sa confirmation. Le mot de passe doit contenir entre 12 et 72 caractères. Sa saisie est matérialisée par des caractères <code>#</code>.</p>
+    <p>L’outil demande la langue par défaut (<code>fr</code> ou <code>en</code>), le prénom, le nom, l’adresse e-mail, puis le mot de passe et sa confirmation. Cette langue pilote l’écran de connexion ; chaque utilisateur peut ensuite choisir sa langue dans <strong>Mon compte</strong>. Le mot de passe doit contenir entre 12 et 72 caractères. Sa saisie est matérialisée par des caractères <code>#</code>.</p>
     <p>L’identifiant de connexion est toujours :</p>
     <pre><code>root</code></pre>
     <p>Le prénom, le nom et l’adresse e-mail ne remplacent pas cet identifiant. Ne relancez pas l’initialisation si l’outil indique que le compte root existe déjà.</p>
+    <p>Lorsque MySQL ou MariaDB est actif, le même parcours configure le compte de supervision dédié. L’étape peut être reprise avec :</p>
+    <pre><code>sudo aegisadmin mysql-setup</code></pre>
+    <p>Le mot de passe administrateur SQL est saisi de façon masquée et n’est pas enregistré par AegisAdmin.</p>
   </section>
 
   <section>
@@ -122,21 +125,17 @@ dpkg-deb --info aegisadmin_*_amd64.deb</code></pre>
     <pre><code>sudo systemctl status \
     aegisadmin-system.service \
     aegisadmin-web.service \
-    apache2.service \
     --no-pager -l
 
-sudo aegisadmin version
-
-wget --no-check-certificate --quiet --output-document=- \
-    https://127.0.0.1:9080/readyz</code></pre>
-    <p>Les trois services doivent être actifs. La sonde doit renvoyer une réponse de cette forme :</p>
+sudo aegisadmin version</code></pre>
+    <p>Avec Apache, contrôlez séparément <code>apache2.service</code> et la sonde <code>https://127.0.0.1:9080/readyz</code>. Sans Apache, utilisez <code>https://127.0.0.1:8443/readyz</code>. Les deux services AegisAdmin doivent être actifs. La sonde doit renvoyer une réponse de cette forme :</p>
     <pre><code>{"status":"ok","version":"VERSION","backend":"ok","database":"ok"}</code></pre>
-    <p>Le port <code>9080</code> correspond à l’écoute locale du serveur Go. Il n’est pas destiné à être ouvert directement sur Internet.</p>
+    <p>Avec Apache, le port <code>9080</code> correspond à l’écoute locale du serveur Go et ne doit pas être ouvert sur Internet. Sans Apache, Go écoute directement sur le port dédié <code>8443</code>.</p>
   </section>
 
   <section>
     <h2>8. Ouvrir l’interface pour la première fois</h2>
-    <p>Le paquet fournit un accès Apache HTTPS de secours :</p>
+    <p>Le paquet fournit un accès HTTPS dédié, servi directement par Go sans Apache ou par le VirtualHost dédié lorsqu’Apache est présent :</p>
     <pre><code>https://ADRESSE_IP_DU_SERVEUR:8443/</code></pre>
     <p>Vérifiez que le serveur écoute sur ce port :</p>
     <pre><code>sudo ss -ltnp | grep ':8443'</code></pre>
@@ -156,7 +155,7 @@ wget --no-check-certificate --quiet --output-document=- \
       <li>ouvrir Processus, Stockage, Services, Réseau et Journaux ;</li>
       <li>contrôler Apache, Fail2ban, Pare-feu, Cron et Certificats TLS ;</li>
       <li>vérifier Mises à jour, Utilisateurs, Modules, Paramètres et Config. serveur ;</li>
-      <li>tester les trois thèmes et une largeur d’écran réduite ;</li>
+      <li>tester les quatre thèmes, le français, l’anglais et une largeur d’écran réduite ;</li>
       <li>créer une sauvegarde depuis <strong>Paramètres &gt; Sauvegarde de la base</strong>.</li>
     </ol>
     <p>Ne testez les actions de modification qu’après avoir créé une sauvegarde ou un snapshot de la machine.</p>
@@ -175,16 +174,15 @@ sudo apt install aegisadmin</code></pre>
     <p>Si l’interface ne répond pas :</p>
     <pre><code>sudo journalctl -u aegisadmin-system.service -n 100 --no-pager -l
 sudo journalctl -u aegisadmin-web.service -n 100 --no-pager -l
-sudo journalctl -u apache2.service -n 100 --no-pager -l
-sudo apache2ctl configtest
 sudo ss -ltnp | grep -E ':8443|:9080'</code></pre>
+    <p>Si Apache est installé, ajoutez <code>sudo journalctl -u apache2.service -n 100 --no-pager -l</code> et <code>sudo apache2ctl configtest</code>.</p>
     <p>Contrôlez dans cet ordre :</p>
     <ol>
       <li><code>aegisadmin-system.service</code> ;</li>
       <li>le socket <code>/run/aegisadmin-system/backend.sock</code> ;</li>
       <li><code>aegisadmin-web.service</code> ;</li>
-      <li>la sonde locale sur le port <code>9080</code> ;</li>
-      <li>Apache et l’accès sur le port <code>8443</code> ;</li>
+      <li>la sonde locale adaptée au mode d’installation ;</li>
+      <li>l’écoute Go directe sur <code>8443</code> ou Apache devant <code>9080</code> ;</li>
       <li>le pare-feu et le routage réseau.</li>
     </ol>
     <p>Ne démarrez jamais manuellement le serveur web AegisAdmin en root.</p>

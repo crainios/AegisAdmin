@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="{{LANG}}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Stockage — AegisAdmin</title>
+    <title>{{T:storage.title}} — AegisAdmin</title>
     <link rel="stylesheet" href="/assets/app.css?v={{VERSION}}">
 </head>
 <body class="dashboard-body">
@@ -11,22 +11,22 @@
         <header class="dashboard-header">
             <div>
                 <p class="eyebrow">AegisAdmin</p>
-                <h1>Stockage</h1>
-                <p class="muted">Capacité et occupation des volumes montés · Droit {{PERMISSION}}</p>
+                <h1>{{T:storage.title}}</h1>
+                <p class="muted">{{T:storage.subtitle}} {{PERMISSION}}</p>
             </div>
             <div class="header-actions">
-                <a class="secondary-link" href="/go/dashboard">Tableau de bord</a>
+                <a class="secondary-link" href="/go/dashboard">{{T:storage.dashboard}}</a>
                 <form method="post" action="/logout">
                     <input type="hidden" name="_token" value="{{CSRF}}">
-                    <button class="secondary-button" type="submit">Se déconnecter</button>
+                    <button class="secondary-button" type="submit">{{T:common.logout}}</button>
                 </form>
             </div>
         </header>
-        <section class="summary-grid" aria-label="Synthèse du stockage">{{SUMMARY}}</section>
+        <section class="summary-grid" aria-label="{{T:storage.summary}}">{{SUMMARY}}</section>
         <section class="table-panel">
             <div class="table-scroll">
                 <table class="data-table sortable-table" data-sortable-table data-sort-default-column="0" data-sort-default-direction="ascending">
-                    <thead><tr><th aria-sort="none"><button type="button" data-sort-column="0" data-sort-type="text">Disque physique</button></th><th aria-sort="none"><button type="button" data-sort-column="1" data-sort-type="text">Point de montage</button></th><th aria-sort="none"><button type="button" data-sort-column="2" data-sort-type="text">Type</button></th><th aria-sort="none"><button type="button" data-sort-column="3" data-sort-type="number">Capacité</button></th><th aria-sort="none"><button type="button" data-sort-column="4" data-sort-type="number">Utilisé</button></th><th aria-sort="none"><button type="button" data-sort-column="5" data-sort-type="number">Disponible</button></th><th aria-sort="none"><button type="button" data-sort-column="6" data-sort-type="number">Occupation</button></th><th aria-sort="none"><button type="button" data-sort-column="7" data-sort-type="text">État</button></th><th aria-sort="none"><button type="button" data-sort-column="8" data-sort-type="text">Source</button></th></tr></thead>
+                    <thead><tr><th aria-sort="none"><button type="button" data-sort-column="0" data-sort-type="text">{{T:storage.device}}</button></th><th aria-sort="none"><button type="button" data-sort-column="1" data-sort-type="text">{{T:storage.mount}}</button></th><th aria-sort="none"><button type="button" data-sort-column="2" data-sort-type="text">{{T:storage.type}}</button></th><th aria-sort="none"><button type="button" data-sort-column="3" data-sort-type="number">{{T:storage.capacity}}</button></th><th aria-sort="none"><button type="button" data-sort-column="4" data-sort-type="number">{{T:storage.used}}</button></th><th aria-sort="none"><button type="button" data-sort-column="5" data-sort-type="number">{{T:storage.available}}</button></th><th aria-sort="none"><button type="button" data-sort-column="6" data-sort-type="number">{{T:storage.usage}}</button></th><th aria-sort="none"><button type="button" data-sort-column="7" data-sort-type="text">{{T:storage.state}}</button></th><th aria-sort="none"><button type="button" data-sort-column="8" data-sort-type="text">{{T:storage.source}}</button></th></tr></thead>
                     <tbody>{{MOUNTS}}</tbody>
                 </table>
             </div>

@@ -86,6 +86,16 @@ func (h *Handler) Handle(ctx context.Context, command string, args []string) pro
 			return fail(2, "INVALID_ARGUMENT_COUNT", "Le nombre d’arguments fourni est invalide.")
 		}
 	}
+	if !executable(h.backend.paths.Certbot) {
+		switch command {
+		case "info":
+			return protocol.Reply{Response: api.Success(map[string]any{"installed": false, "product": "Certbot", "version": "", "executable": "", "installation": "absent", "package": nil, "package_version": nil, "plugins": []string{}})}
+		case "status":
+			return protocol.Reply{Response: api.Success(map[string]any{"service": "certbot", "unit": "certbot.service", "timer": "certbot.timer", "exists": false, "timer_exists": false, "timer_active": false, "timer_enabled": false, "service_active": false, "service_state": "not-found", "last_result": "indisponible", "last_exit_code": 0, "last_trigger": nil, "next_trigger": nil})}
+		case "certificates":
+			return protocol.Reply{Response: api.Success(map[string]any{"certificates": []any{}})}
+		}
+	}
 	if failure := h.backend.dependencies(command); failure != nil {
 		return *failure
 	}

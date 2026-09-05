@@ -2,14 +2,14 @@
 
 ## État actuel
 
-La version 0.2.39 est la version candidate courante :
+La version 0.2.83 est la version candidate courante :
 
 - interface web et backend système en Go ;
 - seize domaines d'administration et de supervision ;
 - paquet Debian et cycle de vie contrôlé ;
 - dépôt APT officiel signé ;
 - documentation d'installation et d'exploitation ;
-- audit des trois thèmes, contrôle responsive et harmonisation des permissions ;
+- quatre thèmes, interface responsive et choix français ou anglais par profil ;
 - bibliothèque de sauvegardes Cron avec transfert `rsync`/SSH hors serveur ;
 - suivi des mises à jour dans une modale de type terminal.
 - mise à jour autonome du paquet par un service systemd indépendant avec suivi
@@ -33,7 +33,7 @@ principaux : installation, authentification, consultation, actions système,
 sauvegarde, restauration et mise à jour.
 
 La stabilité annoncée concernera d'abord les systèmes Debian ou Ubuntu avec
-systemd, APT, Apache et l'architecture `amd64`.
+systemd, APT et l'architecture `amd64`. Apache sera facultatif.
 
 ## Évolutions ultérieures
 
