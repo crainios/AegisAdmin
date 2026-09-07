@@ -18,3 +18,4 @@
 - [Thèmes](themes.md)
 - [Double authentification](two-factor-authentication.md)
 - [Journal des accès](user-access-log.md)
+- [Tableau privé des téléchargements](download-statistics.md)

@@ -1089,8 +1089,8 @@ func TestFail2banAndFirewallRowsUseEnglish(t *testing.T) {
 }
 
 func TestUpdatesUseEnglish(t *testing.T) {
-	page := localizeUpdatesHTML(`<html lang="fr"><h1>Mises à jour</h1><h2>Paquets disponibles</h2><p>Sécurité</p><p>Installation des mises à jour</p>`, "en")
-	if !strings.Contains(page, `lang="en"`) || !strings.Contains(page, "Available packages") || !strings.Contains(page, "Security") || strings.Contains(page, "Mises à jour") {
+	page := localizeUpdatesHTML(`<html lang="fr"><h1>Mises à jour</h1><h2>Paquets disponibles</h2><p>Sécurité</p><p>Détails</p><p>Installation des mises à jour</p>`, "en")
+	if !strings.Contains(page, `lang="en"`) || !strings.Contains(page, "Available packages") || !strings.Contains(page, "Security") || !strings.Contains(page, ">Details<") || strings.Contains(page, "Detailss") || strings.Contains(page, "Mises à jour") {
 		t.Fatalf("updates page=%q", page)
 	}
 	rows := renderUpdates([]webupdates.Update{{Name: "example", Security: true}}, "en")

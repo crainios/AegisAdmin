@@ -1,6 +1,6 @@
 # État du projet AegisAdmin
 
-Dernière mise à jour : 5 septembre 2026 — version 0.2.84.
+Dernière mise à jour : 7 septembre 2026 — version 0.2.86.
 
 ## Statut
 
@@ -260,3 +260,13 @@ La version 0.2.59 remplace l’affichage JSON des résultats Certbot par une
 modale avec suivi automatique, synthèse en français et sortie terminal. La
 liste des certificats est actualisée lorsque l’utilisateur ferme un résultat
 terminé.
+
+La version 0.2.85 fournit séparément un générateur de tableau privé pour le
+serveur `packages.aegisadmin.fr`. Il agrège les téléchargements APT issus des
+journaux Apache et les compteurs publics des fichiers GitHub Releases, sans
+publier les adresses IP. Ce composant autonome n’est pas installé dans
+AegisAdmin et dispose de sa propre protection Apache par mot de passe.
+
+La version 0.2.86 traite explicitement le cas d’un journal ne contenant encore
+aucun téléchargement de paquet : le tableau affiche zéro sans erreur de
+chargement JavaScript.

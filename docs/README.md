@@ -18,6 +18,7 @@
 - [Themes](en/themes.md)
 - [Two-factor authentication](en/two-factor-authentication.md)
 - [User access log](en/user-access-log.md)
+- [Private download dashboard](en/download-statistics.md)
 
 The French source documents remain in this directory. English documentation
 is maintained under `docs/en/` and is the default target of GitHub links.

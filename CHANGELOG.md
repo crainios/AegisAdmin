@@ -2,6 +2,22 @@
 
 [Historique détaillé en français](CHANGELOG.fr.md)
 
+## 0.2.86
+
+- The standalone download dashboard now emits empty JSON collections as arrays
+  and tolerates older statistics files containing `null`, so a repository with
+  no recorded package download displays zero instead of a JavaScript error.
+
+## 0.2.85
+
+- A standalone private dashboard aggregates successful APT package downloads
+  by day, version and architecture without copying client IP addresses.
+- Public GitHub Release asset counters are merged when available; GitHub API
+  failures do not prevent publication of APT statistics.
+- A hardened systemd timer and password-protected Apache configuration provide
+  hourly generation without installing AegisAdmin on the package server.
+- The Updates interface consistently uses the English label “Details”.
+
 ## 0.2.84
 
 - English is now the default language of the GitHub README, contribution

@@ -1,5 +1,16 @@
 # Journal des versions
 
+## 0.2.86
+
+- Le tableau autonome des téléchargements sérialise désormais les collections vides sous forme de listes JSON et accepte les anciennes statistiques contenant `null`. Un dépôt sans téléchargement affiche ainsi zéro au lieu d’une erreur JavaScript.
+
+## 0.2.85
+
+- Un tableau privé autonome agrège les téléchargements APT réussis par jour, version et architecture sans recopier les adresses IP des clients.
+- Les compteurs des fichiers joints aux GitHub Releases sont fusionnés lorsqu’ils sont disponibles, sans bloquer les statistiques APT en cas d’erreur GitHub.
+- Un service systemd durci, une minuterie horaire et une protection Apache par mot de passe permettent son fonctionnement sans installer AegisAdmin sur le serveur de paquets.
+- Le libellé anglais de l’écran Mises à jour est uniformisé sur « Details ».
+
 ## 0.2.84
 
 - L’anglais devient la langue par défaut du README GitHub, du guide de contribution, de la politique de sécurité et de l’index documentaire.
