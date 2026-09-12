@@ -601,7 +601,7 @@ func TestLogsRequiresPermissionAndEscapesContent(t *testing.T) {
 		!strings.Contains(response.Body.String(), `value="test"`) ||
 		!strings.Contains(response.Body.String(), `href="/logs"`) ||
 		!strings.Contains(response.Body.String(), "Selection and search") ||
-		!strings.Contains(response.Body.String(), "1 line displayed among the latest 750 requested") ||
+		!strings.Contains(response.Body.String(), "1 line displayed out of 1 total") ||
 		strings.Contains(response.Body.String(), "Sélection et recherche") {
 		t.Fatalf("logs response = %d %q", response.Code, response.Body.String())
 	}
@@ -1763,7 +1763,7 @@ func (f *fakeLoginUsers) NetworkSnapshot(context.Context, string) (webnetwork.Sn
 }
 
 func (f *fakeLoginUsers) LogsSnapshot(context.Context, string, int) (weblogs.Snapshot, error) {
-	return weblogs.Snapshot{Sources: []string{"apache2/error.log"}, Selected: "apache2/error.log", Lines: []string{"2026-08-17 erreur de test"}}, nil
+	return weblogs.Snapshot{Sources: []string{"apache2/error.log"}, Selected: "apache2/error.log", Lines: []string{"2026-08-17 erreur de test"}, Total: 1}, nil
 }
 
 func (f *fakeLoginUsers) LogSources(context.Context) ([]string, error) {

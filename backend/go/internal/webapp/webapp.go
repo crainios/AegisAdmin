@@ -1426,10 +1426,11 @@ func (a *application) logs(response http.ResponseWriter, request *http.Request) 
 		lineContent = i18n.Text(language, "logs.lines.empty")
 	}
 	results := ""
+	total := formatIntegerForLanguage(snapshot.Total, language)
 	if len(lines) == 1 {
-		results = fmt.Sprintf(i18n.Text(language, "logs.results.one"), lineCount)
+		results = fmt.Sprintf(i18n.Text(language, "logs.results.one"), total)
 	} else {
-		results = fmt.Sprintf(i18n.Text(language, "logs.results.many"), len(lines), lineCount)
+		results = fmt.Sprintf(i18n.Text(language, "logs.results.many"), len(lines), total)
 	}
 	page := strings.NewReplacer(
 		"{{CSRF}}", html.EscapeString(session.CSRFToken),

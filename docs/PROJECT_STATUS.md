@@ -1,6 +1,6 @@
 # État du projet AegisAdmin
 
-Dernière mise à jour : 12 septembre 2026 — version 0.2.89.
+Dernière mise à jour : 12 septembre 2026 — version 0.2.90.
 
 ## Statut
 
@@ -282,3 +282,8 @@ La version 0.2.89 sécurise le redémarrage immédiat demandé depuis Mises à j
 Une page légère est remise au navigateur avant l’arrêt, détecte la coupure puis
 attend automatiquement le retour de l’endpoint de santé avant de recharger
 l’interface et sa session persistante.
+
+La version 0.2.90 complète l’écran Journaux avec le nombre total de lignes du
+fichier sélectionné. Cette valeur est calculée indépendamment de la profondeur
+de lecture et des filtres, puis comparée au nombre de lignes réellement
+affichées.

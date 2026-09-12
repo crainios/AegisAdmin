@@ -2,6 +2,13 @@
 
 [Historique détaillé en français](CHANGELOG.fr.md)
 
+## 0.2.90
+
+- The Logs backend reports the total number of lines in the selected file,
+  independently of the requested window and active filters.
+- The result summary now compares displayed lines with that complete file
+  total rather than with the user-selected request size.
+
 ## 0.2.89
 
 - An immediate reboot requested from Updates is now scheduled five seconds

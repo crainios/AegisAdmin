@@ -1,5 +1,10 @@
 # Journal des versions
 
+## 0.2.90
+
+- Le backend Journaux renvoie le nombre total de lignes du fichier sélectionné, indépendamment de la fenêtre demandée et des filtres actifs.
+- Le résumé compare désormais les lignes affichées à ce total complet, et non au nombre de lignes demandé par l’utilisateur.
+
 ## 0.2.89
 
 - Un redémarrage immédiat demandé depuis Mises à jour est désormais déclenché cinq secondes plus tard afin que la page de confirmation parvienne au navigateur avant l’arrêt des services.

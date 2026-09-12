@@ -18,6 +18,7 @@ type Snapshot struct {
 	Sources  []string
 	Selected string
 	Lines    []string
+	Total    int64
 }
 type Client struct{ backend Backend }
 
@@ -71,6 +72,7 @@ func (c *Client) LogsSnapshot(ctx context.Context, requested string, lineCount i
 	}
 	var content struct {
 		Lines []string `json:"lines"`
+		Total int64    `json:"total_lines"`
 	}
 	if err = decode(*tail.Response.Data, &content); err != nil {
 		return Snapshot{}, fmt.Errorf("decode log content: %w", err)
@@ -79,6 +81,7 @@ func (c *Client) LogsSnapshot(ctx context.Context, requested string, lineCount i
 		snapshot.Lines = content.Lines
 		slices.Reverse(snapshot.Lines)
 	}
+	snapshot.Total = content.Total
 	return snapshot, nil
 }
 

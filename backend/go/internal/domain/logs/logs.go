@@ -1,8 +1,10 @@
 package logs
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +38,7 @@ type Log struct {
 
 type Collector interface {
 	Logs(context.Context) []Log
-	Tail(context.Context, string, int) ([]string, error)
+	Tail(context.Context, string, int) ([]string, int64, error)
 }
 
 type commandRunner interface {
@@ -93,7 +95,7 @@ func (h *Handler) Handle(ctx context.Context, command string, arguments []string
 		if err != nil || lines < minimumLines || lines > maximumLines || !digitsOnly(arguments[1]) {
 			return failure(2, "INVALID_LINE_COUNT", "Le nombre de lignes doit être compris entre 1 et 5000.")
 		}
-		content, err := h.collector.Tail(ctx, arguments[0], lines)
+		content, total, err := h.collector.Tail(ctx, arguments[0], lines)
 		switch {
 		case errors.Is(err, errNotFound):
 			return failure(5, "LOG_NOT_FOUND", "Le journal demandé est introuvable ou n’est pas autorisé.")
@@ -105,6 +107,7 @@ func (h *Handler) Handle(ctx context.Context, command string, arguments []string
 		return success(map[string]any{
 			"id":              arguments[0],
 			"requested_lines": lines,
+			"total_lines":     total,
 			"lines":           content,
 		})
 
@@ -157,7 +160,7 @@ func (c *LinuxCollector) Logs(context.Context) []Log {
 	return logs
 }
 
-func (c *LinuxCollector) Tail(ctx context.Context, identifier string, lines int) ([]string, error) {
+func (c *LinuxCollector) Tail(ctx context.Context, identifier string, lines int) ([]string, int64, error) {
 	path := ""
 	for _, log := range c.Logs(ctx) {
 		if log.ID == identifier {
@@ -166,24 +169,53 @@ func (c *LinuxCollector) Tail(ctx context.Context, identifier string, lines int)
 		}
 	}
 	if path == "" {
-		return nil, errNotFound
+		return nil, 0, errNotFound
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, errNotReadable
+		return nil, 0, errNotReadable
 	}
-	if err := file.Close(); err != nil {
-		return nil, errNotReadable
+	total, err := countLines(file)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, 0, errNotReadable
 	}
 	output, err := c.runner.Run(ctx, "-n", strconv.Itoa(lines), "--", path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	trimmed := strings.TrimRight(string(output), "\n")
 	if trimmed == "" {
-		return []string{}, nil
+		return []string{}, total, nil
 	}
-	return strings.Split(trimmed, "\n"), nil
+	return strings.Split(trimmed, "\n"), total, nil
+}
+
+func countLines(reader io.Reader) (int64, error) {
+	buffer := make([]byte, 64*1024)
+	var total int64
+	var last byte
+	var readAny bool
+	for {
+		read, err := reader.Read(buffer)
+		if read > 0 {
+			readAny = true
+			last = buffer[read-1]
+			total += int64(bytes.Count(buffer[:read], []byte{'\n'}))
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+	if readAny && last != '\n' {
+		total++
+	}
+	return total, nil
 }
 
 func (execRunner) Run(ctx context.Context, arguments ...string) ([]byte, error) {

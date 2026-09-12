@@ -12,12 +12,13 @@ import (
 type fakeCollector struct {
 	logs  []Log
 	lines []string
+	total int64
 	err   error
 }
 
 func (f fakeCollector) Logs(context.Context) []Log { return f.logs }
-func (f fakeCollector) Tail(context.Context, string, int) ([]string, error) {
-	return f.lines, f.err
+func (f fakeCollector) Tail(context.Context, string, int) ([]string, int64, error) {
+	return f.lines, f.total, f.err
 }
 
 type fixtureRunner struct {
@@ -74,13 +75,16 @@ func TestLinuxCollectorTailsFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(path, output, 0640); err != nil {
+		t.Fatal(err)
+	}
 	runner := &fixtureRunner{output: output}
 	collector := &LinuxCollector{root: root, directories: []string{apache}, runner: runner}
-	lines, err := collector.Tail(context.Background(), "apache2/error.log", 100)
+	lines, total, err := collector.Tail(context.Background(), "apache2/error.log", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(lines) != 3 || lines[1] != `quoted "message"` || lines[2] != "last line" {
+	if total != 4 || len(lines) != 3 || lines[1] != `quoted "message"` || lines[2] != "last line" {
 		t.Fatalf("unexpected lines: %#v", lines)
 	}
 	expectedCall := "-n 100 -- " + path
@@ -92,7 +96,7 @@ func TestLinuxCollectorTailsFixture(t *testing.T) {
 func TestLinuxCollectorTailErrors(t *testing.T) {
 	root := t.TempDir()
 	collector := &LinuxCollector{root: root, directories: []string{root}, runner: &fixtureRunner{}}
-	if _, err := collector.Tail(context.Background(), "apache2/missing.log", 10); !errors.Is(err, errNotFound) {
+	if _, _, err := collector.Tail(context.Background(), "apache2/missing.log", 10); !errors.Is(err, errNotFound) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -101,6 +105,7 @@ func TestHandlerListAndTail(t *testing.T) {
 	handler := New(fakeCollector{
 		logs:  []Log{{ID: "apache2/error.log", Path: "/var/log/apache2/error.log"}},
 		lines: []string{"one", "two"},
+		total: 42,
 	})
 	list := handler.Handle(context.Background(), "list", nil)
 	if list.ExitCode != 0 || list.Response.Data == nil {
@@ -112,12 +117,21 @@ func TestHandlerListAndTail(t *testing.T) {
 	}
 
 	tail := handler.Handle(context.Background(), "tail", []string{"apache2/error.log", "100"})
-	if tail.ExitCode != 0 || tail.Response.Data == nil || (*tail.Response.Data)["requested_lines"] != 100 {
+	if tail.ExitCode != 0 || tail.Response.Data == nil || (*tail.Response.Data)["requested_lines"] != 100 || (*tail.Response.Data)["total_lines"] != int64(42) {
 		t.Fatalf("unexpected tail reply: %#v", tail)
 	}
 	lines := (*tail.Response.Data)["lines"].([]string)
 	if len(lines) != 2 || lines[1] != "two" {
 		t.Fatalf("unexpected tail lines: %#v", lines)
+	}
+}
+
+func TestCountLinesIncludesFinalLineWithoutNewline(t *testing.T) {
+	for input, expected := range map[string]int64{"": 0, "one": 1, "one\n": 1, "one\ntwo": 2, "one\ntwo\n": 2} {
+		total, err := countLines(strings.NewReader(input))
+		if err != nil || total != expected {
+			t.Fatalf("countLines(%q) = %d, %v; want %d", input, total, err, expected)
+		}
 	}
 }
 
