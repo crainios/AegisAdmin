@@ -1,5 +1,19 @@
 # Journal des versions
 
+## 0.2.89
+
+- Un redémarrage immédiat demandé depuis Mises à jour est désormais déclenché cinq secondes plus tard afin que la page de confirmation parvienne au navigateur avant l’arrêt des services.
+- Un écran d’attente bilingue constate la coupure, interroge périodiquement l’état du serveur et recharge AegisAdmin dès son retour.
+
+## 0.2.88
+
+- La remise à zéro de l’écran Journaux efface désormais tous les filtres et restaure l’état initial de la page, notamment le journal configuré par défaut et la fenêtre de 100 lignes.
+
+## 0.2.87
+
+- L’écran Journaux permet de choisir librement une fenêtre comprise entre 1 et 5 000 lignes au lieu de demander systématiquement les 100 dernières.
+- Le résumé des résultats indique désormais la fenêtre sélectionnée.
+
 ## 0.2.86
 
 - Le tableau autonome des téléchargements sérialise désormais les collections vides sous forme de listes JSON et accepte les anciennes statistiques contenant `null`. Un dépôt sans téléchargement affiche ainsi zéro au lieu d’une erreur JavaScript.

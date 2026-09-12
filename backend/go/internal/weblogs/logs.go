@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 
 	"aegisadmin/backend/internal/protocol"
 )
@@ -47,7 +48,10 @@ func (c *Client) LogSources(ctx context.Context) ([]string, error) {
 	return sources, nil
 }
 
-func (c *Client) LogsSnapshot(ctx context.Context, requested string) (Snapshot, error) {
+func (c *Client) LogsSnapshot(ctx context.Context, requested string, lineCount int) (Snapshot, error) {
+	if lineCount < 1 || lineCount > 5000 {
+		return Snapshot{}, errors.New("invalid log line count")
+	}
 	sources, err := c.LogSources(ctx)
 	if err != nil {
 		return Snapshot{}, err
@@ -61,7 +65,7 @@ func (c *Client) LogsSnapshot(ctx context.Context, requested string) (Snapshot, 
 	if snapshot.Selected == "" {
 		return snapshot, nil
 	}
-	tail, err := c.backend.Execute(protocol.Request{Domain: "logs", Command: "tail", Arguments: []string{snapshot.Selected, "100"}})
+	tail, err := c.backend.Execute(protocol.Request{Domain: "logs", Command: "tail", Arguments: []string{snapshot.Selected, strconv.Itoa(lineCount)}})
 	if err != nil || !tail.Response.Success || tail.Response.Data == nil {
 		return Snapshot{}, errors.New("log content unavailable")
 	}

@@ -1,6 +1,6 @@
 # État du projet AegisAdmin
 
-Dernière mise à jour : 7 septembre 2026 — version 0.2.86.
+Dernière mise à jour : 12 septembre 2026 — version 0.2.89.
 
 ## Statut
 
@@ -270,3 +270,15 @@ AegisAdmin et dispose de sa propre protection Apache par mot de passe.
 La version 0.2.86 traite explicitement le cas d’un journal ne contenant encore
 aucun téléchargement de paquet : le tableau affiche zéro sans erreur de
 chargement JavaScript.
+
+La version 0.2.87 rend configurable la profondeur de lecture de l’écran
+Journaux, de 1 à 5 000 lignes. Le résumé distingue le nombre de lignes retenues
+par les filtres de la fenêtre demandée au backend.
+
+La version 0.2.88 fait de la commande RAZ une remise à l’état initial complet
+de l’écran Journaux : source par défaut, aucun filtre et 100 lignes.
+
+La version 0.2.89 sécurise le redémarrage immédiat demandé depuis Mises à jour.
+Une page légère est remise au navigateur avant l’arrêt, détecte la coupure puis
+attend automatiquement le retour de l’endpoint de santé avant de recharger
+l’interface et sa session persistante.

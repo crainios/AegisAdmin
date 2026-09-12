@@ -2,6 +2,25 @@
 
 [Historique détaillé en français](CHANGELOG.fr.md)
 
+## 0.2.89
+
+- An immediate reboot requested from Updates is now scheduled five seconds
+  later, allowing the HTTP confirmation page to reach the browser before the
+  services stop.
+- A dedicated bilingual waiting screen detects the interruption, retries the
+  health endpoint and reloads AegisAdmin as soon as the server is available.
+
+## 0.2.88
+
+- Resetting the Logs search now clears every filter and returns to the initial
+  page state, including the configured default log and the 100-line window.
+
+## 0.2.87
+
+- The Logs screen accepts a user-defined window from 1 to 5,000 lines instead
+  of always requesting the latest 100 entries.
+- Its result summary now reports the selected window.
+
 ## 0.2.86
 
 - The standalone download dashboard now emits empty JSON collections as arrays

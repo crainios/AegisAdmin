@@ -120,7 +120,7 @@ type NetworkProvider interface {
 
 type LogsProvider interface {
 	LogSources(context.Context) ([]string, error)
-	LogsSnapshot(context.Context, string) (weblogs.Snapshot, error)
+	LogsSnapshot(context.Context, string, int) (weblogs.Snapshot, error)
 }
 type PHPProvider interface {
 	PHPSnapshot(context.Context) (webphp.Snapshot, error)
@@ -266,6 +266,7 @@ type application struct {
 	cronPage                  string
 	certbotPage               string
 	updatesPage               string
+	rebootWaitPage            string
 	usersPage                 string
 	userCreatePage            string
 	userEditPage              string
@@ -441,6 +442,7 @@ func newApplication(assets fs.FS, dependencies Dependencies) *application {
 		cronPage:                  read("cron.html"),
 		certbotPage:               read("certbot.html"),
 		updatesPage:               read("updates.html"),
+		rebootWaitPage:            read("reboot-wait.html"),
 		usersPage:                 read("users.html"),
 		userCreatePage:            read("user-create.html"),
 		userEditPage:              read("user-edit.html"),
@@ -1396,6 +1398,15 @@ func (a *application) logs(response http.ResponseWriter, request *http.Request) 
 		http.Error(response, "Le mot-clé demandé est invalide.", http.StatusBadRequest)
 		return
 	}
+	lineCount := 100
+	if value := request.URL.Query().Get("lines"); value != "" {
+		parsed, parseErr := strconv.Atoi(value)
+		if parseErr != nil || parsed < 1 || parsed > 5000 || value != strconv.Itoa(parsed) {
+			http.Error(response, "Le nombre de lignes doit être compris entre 1 et 5000.", http.StatusBadRequest)
+			return
+		}
+		lineCount = parsed
+	}
 	ctx, cancel := context.WithTimeout(request.Context(), 12*time.Second)
 	defer cancel()
 	if requested == "" && a.dependencies.Settings != nil {
@@ -1403,7 +1414,7 @@ func (a *application) logs(response http.ResponseWriter, request *http.Request) 
 			requested = strings.TrimSpace(settings.DefaultLog)
 		}
 	}
-	snapshot, err := a.dependencies.Logs.LogsSnapshot(ctx, requested)
+	snapshot, err := a.dependencies.Logs.LogsSnapshot(ctx, requested, lineCount)
 	if err != nil {
 		http.Error(response, "Les journaux n’ont pas pu être chargés.", http.StatusServiceUnavailable)
 		return
@@ -1416,18 +1427,19 @@ func (a *application) logs(response http.ResponseWriter, request *http.Request) 
 	}
 	results := ""
 	if len(lines) == 1 {
-		results = i18n.Text(language, "logs.results.one")
+		results = fmt.Sprintf(i18n.Text(language, "logs.results.one"), lineCount)
 	} else {
-		results = fmt.Sprintf(i18n.Text(language, "logs.results.many"), len(lines))
+		results = fmt.Sprintf(i18n.Text(language, "logs.results.many"), len(lines), lineCount)
 	}
 	page := strings.NewReplacer(
 		"{{CSRF}}", html.EscapeString(session.CSRFToken),
 		"{{PERMISSION}}", html.EscapeString(permissionLabelForLanguage(level, language)),
 		"{{SOURCES}}", renderLogSources(snapshot.Sources, snapshot.Selected, language),
 		"{{LEVELS}}", renderLogLevels(logLevel, language),
+		"{{LINE_COUNT}}", strconv.Itoa(lineCount),
 		"{{KEYWORD}}", html.EscapeString(keyword),
 		"{{SELECTED}}", html.EscapeString(logTitle(snapshot.Selected, language)),
-		"{{RESET_URL}}", html.EscapeString("/logs?source="+url.QueryEscape(snapshot.Selected)),
+		"{{RESET_URL}}", "/logs",
 		"{{RESULTS}}", html.EscapeString(results),
 		"{{LINES}}", html.EscapeString(lineContent),
 	).Replace(i18n.Localize(a.logsPage, language))

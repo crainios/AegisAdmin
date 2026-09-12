@@ -263,6 +263,7 @@ func (a *application) rebootServer(response http.ResponseWriter, request *http.R
 		http.Error(response, "Accès réservé au compte root.", http.StatusForbidden)
 		return
 	}
+	language := a.languageForUser(request.Context(), user.ID)
 	request.Body = http.MaxBytesReader(response, request.Body, 4096)
 	if err := request.ParseForm(); err != nil || !a.dependencies.Sessions.ValidateCSRF(session.ID, request.PostForm.Get("_token")) || request.PostForm.Get("confirmation") != "reboot" {
 		http.Error(response, "Confirmation de redémarrage invalide.", http.StatusBadRequest)
@@ -281,10 +282,11 @@ func (a *application) rebootServer(response http.ResponseWriter, request *http.R
 		return
 	}
 	a.recordAccess(request, &user, user.Login, "server_reboot_scheduled", true)
-	result := strconv.Itoa(delay)
 	if delay == 0 {
-		result = "now"
+		writeHTML(response, i18n.Localize(a.rebootWaitPage, language), http.StatusOK)
+		return
 	}
+	result := strconv.Itoa(delay)
 	http.Redirect(response, request, "/updates?reboot="+url.QueryEscape(result), http.StatusSeeOther)
 }
 func (a *application) updatesJob(response http.ResponseWriter, request *http.Request) {

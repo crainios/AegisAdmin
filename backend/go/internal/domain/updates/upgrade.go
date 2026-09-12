@@ -121,17 +121,17 @@ func (b *Backend) scheduleReboot(delay string) protocol.Reply {
 	if b.upgradeInProgress() {
 		return fail(10, "UPDATE_IN_PROGRESS", "Le serveur ne peut pas redémarrer pendant une mise à jour.")
 	}
-	if b.runner == nil || !executable(b.systemctl) {
+	if b.runner == nil || !executable(b.systemctl) || !executable(b.systemdRun) {
 		return fail(3, "DEPENDENCY_NOT_FOUND", "systemd est nécessaire pour redémarrer le serveur.")
 	}
 	if delay == "0" {
-		if _, status := b.runner.Run(context.Background(), b.systemctl, "reboot", "--no-block"); status != 0 {
+		// Laisse au serveur web le temps de confirmer la demande et d'afficher
+		// l'écran de reconnexion avant que le système interrompe les services.
+		arguments := []string{"--unit=aegisadmin-reboot", "--collect", "--on-active=5s", b.systemctl, "reboot", "--no-block"}
+		if _, status := b.runner.Run(context.Background(), b.systemdRun, arguments...); status != 0 {
 			return fail(10, "REBOOT_SCHEDULE_FAILED", "Le redémarrage du serveur n’a pas pu être programmé.")
 		}
 		return protocol.Reply{Response: api.Success(map[string]any{"scheduled": true, "delay_minutes": 0})}
-	}
-	if !executable(b.systemdRun) {
-		return fail(3, "DEPENDENCY_NOT_FOUND", "systemd-run est nécessaire pour programmer le redémarrage.")
 	}
 	arguments := []string{"--unit=aegisadmin-reboot", "--collect", "--on-active=" + delay + "m", b.systemctl, "reboot", "--no-block"}
 	if _, status := b.runner.Run(context.Background(), b.systemdRun, arguments...); status != 0 {

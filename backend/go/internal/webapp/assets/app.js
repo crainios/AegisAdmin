@@ -762,6 +762,44 @@
         poll();
     }
 
+    const rebootWaitModal = document.querySelector("[data-reboot-wait]");
+    if (rebootWaitModal?.dataset.rebootActive === "true") {
+        const rebootText = activeLanguage === "en" ? {
+            stopping: "The reboot is starting. Waiting for the server to stop…",
+            offline: "The server is restarting. Reconnection attempts are continuing…",
+            online: "The server is available again. Reloading AegisAdmin…"
+        } : {
+            stopping: "Le redémarrage commence. Attente de l’arrêt du serveur…",
+            offline: "Le serveur redémarre. Les tentatives de reconnexion continuent…",
+            online: "Le serveur est de nouveau disponible. Rechargement d’AegisAdmin…"
+        };
+        const status = rebootWaitModal.querySelector("[data-reboot-wait-status]");
+        let interruptionObserved = false;
+        const probe = async () => {
+            const controller = new AbortController();
+            const timeout = window.setTimeout(() => controller.abort(), 3000);
+            try {
+                const response = await fetch(`/healthz?reboot=${Date.now()}`, {cache: "no-store", credentials: "same-origin", signal: controller.signal});
+                if (!response.ok) throw new Error("health");
+                if (interruptionObserved) {
+                    status.textContent = rebootText.online;
+                    window.setTimeout(() => window.location.replace(`/updates?reconnected=${Date.now()}`), 500);
+                    return;
+                }
+                status.textContent = rebootText.stopping;
+            } catch (_) {
+                interruptionObserved = true;
+                status.textContent = rebootText.offline;
+            } finally {
+                window.clearTimeout(timeout);
+            }
+            window.setTimeout(probe, 2000);
+        };
+        rebootWaitModal.hidden = false;
+        document.body.classList.add("modal-open");
+        window.setTimeout(probe, 2000);
+    }
+
     document.querySelectorAll("[data-password-generator]").forEach((form) => {
         const passwordText = activeLanguage === "en" ? {generated:"A random 24-character password was generated and confirmed.",show:"Show",hide:"Hide",copied:"Password copied to the clipboard.",copyFailed:"Automatic copy failed: the password is selected."} : {generated:"Mot de passe aléatoire de 24 caractères généré et confirmé.",show:"Afficher",hide:"Masquer",copied:"Mot de passe copié dans le presse-papiers.",copyFailed:"Copie automatique impossible : le mot de passe est sélectionné."};
         const password = form.querySelector("[data-generated-password]");

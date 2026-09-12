@@ -590,17 +590,18 @@ func TestLogsRequiresPermissionAndEscapesContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/logs?source=apache2%2Ferror.log&level=error&keyword=test", nil)
+	request := httptest.NewRequest(http.MethodGet, "/logs?source=apache2%2Ferror.log&level=error&keyword=test&lines=750", nil)
 	request.AddCookie(websession.Cookie(session.ID))
 	response := httptest.NewRecorder()
 	Handler(dependencies).ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "2026-08-17 erreur de test") ||
 		!strings.Contains(response.Body.String(), "apache2/error.log") ||
 		!strings.Contains(response.Body.String(), `name="level"`) ||
+		!strings.Contains(response.Body.String(), `name="lines" type="number" min="1" max="5000" step="1" value="750"`) ||
 		!strings.Contains(response.Body.String(), `value="test"`) ||
-		!strings.Contains(response.Body.String(), `href="/logs?source=apache2%2Ferror.log"`) ||
+		!strings.Contains(response.Body.String(), `href="/logs"`) ||
 		!strings.Contains(response.Body.String(), "Selection and search") ||
-		!strings.Contains(response.Body.String(), "1 line displayed out of the latest 100") ||
+		!strings.Contains(response.Body.String(), "1 line displayed among the latest 750 requested") ||
 		strings.Contains(response.Body.String(), "Sélection et recherche") {
 		t.Fatalf("logs response = %d %q", response.Code, response.Body.String())
 	}
@@ -609,6 +610,24 @@ func TestLogsRequiresPermissionAndEscapesContent(t *testing.T) {
 	Handler(dependencies).ServeHTTP(denied, request)
 	if denied.Code != http.StatusForbidden {
 		t.Fatalf("logs denied response = %d", denied.Code)
+	}
+}
+
+func TestLogsRejectsInvalidLineCount(t *testing.T) {
+	users := &fakeLoginUsers{logsPermission: "view", user: authstore.User{ID: 13, Login: "reader", Type: "user", Status: "active", AuthVersion: 1}}
+	dependencies := testDependencies(t, users)
+	session, err := dependencies.Sessions.Create(websession.StateAuthenticated, users.user.ID, users.user.AuthVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"0", "5001", "12.5", "-1"} {
+		request := httptest.NewRequest(http.MethodGet, "/logs?lines="+url.QueryEscape(value), nil)
+		request.AddCookie(websession.Cookie(session.ID))
+		response := httptest.NewRecorder()
+		Handler(dependencies).ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("lines %q response = %d", value, response.Code)
+		}
 	}
 }
 
@@ -1097,6 +1116,50 @@ func TestUpdatesUseEnglish(t *testing.T) {
 	if !strings.Contains(rows, ">Yes</td>") {
 		t.Fatalf("updates rows=%q", rows)
 	}
+}
+
+func TestImmediateRebootReturnsReconnectPageBeforeShutdown(t *testing.T) {
+	users := &fakeLoginUsers{user: authstore.User{ID: 1, Login: "root", Type: "root", Status: "active", AuthVersion: 1}}
+	dependencies := testDependencies(t, users)
+	updates := &fakeUpdatesProvider{}
+	dependencies.Updates = updates
+	session, err := dependencies.Sessions.Create(websession.StateAuthenticated, users.user.ID, users.user.AuthVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"_token": {session.CSRFToken}, "confirmation": {"reboot"}, "delay": {"0"}}
+	request := httptest.NewRequest(http.MethodPost, "/updates/reboot", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(websession.Cookie(session.ID))
+	response := httptest.NewRecorder()
+	Handler(dependencies).ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !updates.rebootCalled || updates.rebootDelay != 0 ||
+		!strings.Contains(response.Body.String(), `data-reboot-active="true"`) ||
+		!strings.Contains(response.Body.String(), "attendra automatiquement le retour du serveur") {
+		t.Fatalf("immediate reboot response=%d delay=%d body=%q", response.Code, updates.rebootDelay, response.Body.String())
+	}
+}
+
+type fakeUpdatesProvider struct {
+	rebootCalled bool
+	rebootDelay  int
+}
+
+func (*fakeUpdatesProvider) Snapshot(context.Context) (webupdates.Snapshot, error) {
+	return webupdates.Snapshot{}, nil
+}
+func (*fakeUpdatesProvider) Summary(context.Context) (webupdates.Summary, error) {
+	return webupdates.Summary{}, nil
+}
+func (*fakeUpdatesProvider) StartUpgrade(context.Context) (string, error) { return "", nil }
+func (*fakeUpdatesProvider) Job(context.Context, string) (webupdates.Job, error) {
+	return webupdates.Job{}, nil
+}
+func (*fakeUpdatesProvider) RefreshComposer(context.Context) error { return nil }
+func (f *fakeUpdatesProvider) Reboot(_ context.Context, delay int) error {
+	f.rebootCalled = true
+	f.rebootDelay = delay
+	return nil
 }
 
 func TestUsersUseEnglish(t *testing.T) {
@@ -1699,7 +1762,7 @@ func (f *fakeLoginUsers) NetworkSnapshot(context.Context, string) (webnetwork.Sn
 	return webnetwork.Snapshot{Interfaces: []webnetwork.Interface{item}, Selected: &item, Summary: webnetwork.Summary{Total: 1, Up: 1}}, nil
 }
 
-func (f *fakeLoginUsers) LogsSnapshot(context.Context, string) (weblogs.Snapshot, error) {
+func (f *fakeLoginUsers) LogsSnapshot(context.Context, string, int) (weblogs.Snapshot, error) {
 	return weblogs.Snapshot{Sources: []string{"apache2/error.log"}, Selected: "apache2/error.log", Lines: []string{"2026-08-17 erreur de test"}}, nil
 }
 

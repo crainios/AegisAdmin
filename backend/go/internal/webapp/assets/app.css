@@ -422,7 +422,7 @@ a.overview-card:hover { border-color: var(--color-primary); transform: translate
 .configuration-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .configuration-compare-form { margin: 0; }
 .configuration-current-inventory { margin-top: 1.5rem; }
-.log-filters { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(10rem, .7fr) minmax(14rem, 1fr) auto; gap: .75rem; align-items: end; }
+.log-filters { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(10rem, .7fr) minmax(8rem, .45fr) minmax(14rem, 1fr) auto; gap: .75rem; align-items: end; }
 .log-filters label { display: grid; gap: .4rem; }
 .log-filters label > span { color: var(--color-text-muted); font-weight: 700; }
 .log-filters input, .log-filters select { width: 100%; min-width: 0; padding: .75rem; border: 1px solid var(--color-border); border-radius: .5rem; color: var(--color-text); background: var(--color-surface); font: inherit; }
@@ -526,6 +526,12 @@ a.overview-card:hover { border-color: var(--color-primary); transform: translate
 .update-job-details { margin: 0; }
 .update-job-modal[data-update-job-result="success"] .update-terminal__bar > span:last-child { color: #7ee2a8; }
 .update-job-modal[data-update-job-result="failed"] .update-terminal__bar > span:last-child { color: #ff8d8d; }
+.reboot-wait-modal__dialog { width: min(34rem, 92vw); }
+.reboot-wait-modal__body { display: grid; justify-items: center; gap: .75rem; padding: 2.5rem; text-align: center; }
+.reboot-wait-modal__body h2, .reboot-wait-modal__body p { margin: 0; }
+.reboot-wait-modal__spinner { width: 3rem; height: 3rem; border: .3rem solid var(--color-border); border-top-color: var(--color-primary); border-radius: 50%; animation: reboot-wait-spin .9s linear infinite; }
+@keyframes reboot-wait-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .reboot-wait-modal__spinner { animation-duration: 2s; } }
 @media (max-width: 640px) {
     .update-job-modal { padding: .5rem; }
     .update-job-modal__dialog { width: 100%; max-height: 96vh; }

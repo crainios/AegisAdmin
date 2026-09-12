@@ -218,7 +218,7 @@ func TestRebootNowAndDelayed(t *testing.T) {
 		}
 	}
 	runner := fakeRunner{
-		systemctl + " reboot --no-block": {"", 0},
+		systemdRun + " --unit=aegisadmin-reboot --collect --on-active=5s " + systemctl + " reboot --no-block":  {"", 0},
 		systemdRun + " --unit=aegisadmin-reboot --collect --on-active=15m " + systemctl + " reboot --no-block": {"", 0},
 	}
 	handler := New(&Backend{runner: runner, systemctl: systemctl, systemdRun: systemdRun, updateState: directory})

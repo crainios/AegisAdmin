@@ -2,7 +2,7 @@
 
 [Version française](../PROJECT_STATUS.md)
 
-Current candidate: **0.2.86**.
+Current candidate: **0.2.89**.
 
 AegisAdmin 0.2.x is a feature-complete release candidate. Its main interface,
 Go architecture, Debian package and signed APT repository are operational.
