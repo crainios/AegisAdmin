@@ -978,7 +978,10 @@ func TestRenderCertificatesSortsByDomains(t *testing.T) {
 
 func TestCronLibraryAndCertificatesUseEnglish(t *testing.T) {
 	library := renderBackupLibrary("token", `<option>root</option>`, "en")
-	if !strings.Contains(library, "Cron task library") || strings.Contains(library, "Bibliothèque de tâches Cron") {
+	if !strings.Contains(library, "Cron task library") || strings.Contains(library, "Bibliothèque de tâches Cron") ||
+		!strings.Contains(library, `name="schedule" value="0 2 * * *"`) ||
+		!strings.Contains(library, "This expression cannot be represented by the checkboxes") ||
+		strings.Contains(library, "Interactive selection") || strings.Contains(library, "Advanced expression") || strings.Contains(library, "Generated expression:") {
 		t.Fatalf("cron library=%q", library)
 	}
 	rows := renderCertificates([]webcertbot.Certificate{{Name: "example.org", Domains: []string{"example.org"}, Valid: true, DaysRemaining: 60}}, "token", true, "en")

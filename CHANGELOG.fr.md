@@ -1,5 +1,18 @@
 # Journal des versions
 
+## 0.2.93
+
+- Le contenu des cinq cartes de périodicité Cron est aligné en haut et leurs boutons « Tout effacer » ont une taille compacte uniforme.
+
+## 0.2.92
+
+- La modale des tâches Cron présente les cinq groupes de périodicité en colonnes sur grand écran, avec repli adaptatif et défilement limité aux longues listes de valeurs.
+
+## 0.2.91
+
+- La création et la modification des tâches Cron utilisent un seul champ d’expression modifiable synchronisé avec les cases de périodicité ; le sélecteur de mode et l’aperçu redondant ont été retirés.
+- Les expressions non représentables par les cases sont conservées sans modification ; les cases sont désactivées jusqu’à ce que l’expression redevienne représentable.
+
 ## 0.2.90
 
 - Le backend Journaux renvoie le nombre total de lignes du fichier sélectionné, indépendamment de la fenêtre demandée et des filtres actifs.

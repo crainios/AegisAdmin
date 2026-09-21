@@ -1,6 +1,6 @@
 # État du projet AegisAdmin
 
-Dernière mise à jour : 12 septembre 2026 — version 0.2.90.
+Dernière mise à jour : 21 septembre 2026 — version 0.2.93.
 
 ## Statut
 
@@ -287,3 +287,15 @@ La version 0.2.90 complète l’écran Journaux avec le nombre total de lignes d
 fichier sélectionné. Cette valeur est calculée indépendamment de la profondeur
 de lecture et des filtres, puis comparée au nombre de lignes réellement
 affichées.
+
+La version 0.2.91 unifie la saisie de la périodicité Cron : une expression
+modifiable remplace le choix de mode et l’aperçu séparé. Les cases et le texte
+se synchronisent lorsque l’expression est représentable ; sinon le texte reste
+intact et les cases sont temporairement désactivées.
+
+La version 0.2.92 compacte la modale Cron sur grand écran en disposant les cinq
+groupes de périodicité en colonnes, avec une grille responsive et un défilement
+interne des longues listes de valeurs lorsque nécessaire.
+
+La version 0.2.93 aligne le contenu de ces cinq cartes en haut et uniformise
+leurs boutons « Tout effacer » au format compact.

@@ -371,24 +371,40 @@
     const cronParts = ["minute","hour","monthday","month","weekday"];
     const selectedCronValues = (part) => Array.from(cronForm?.querySelectorAll(`[data-cron-part="${part}"]:checked`) || []).map((field)=>Number(field.value)).sort((a,b)=>a-b);
     const cronPartExpression = (part, total) => { const values=selectedCronValues(part); return values.length===0||values.length===total?"*":values.join(","); };
-    const updateCronSchedule = () => {
+    const cronScheduleField=cronForm?.querySelector("[data-cron-schedule]");
+    const updateCronWarning=() => {
+        cronForm.querySelector("[data-cron-day-warning]").hidden=selectedCronValues("monthday").length===0||selectedCronValues("weekday").length===0;
+    };
+    const updateCronSchedule=() => {
         if (!cronForm) return;
-        const custom=cronForm.querySelector("[data-cron-mode]").value==="custom";
-        cronForm.querySelector("[data-cron-visual]").hidden=custom;
-        cronForm.querySelector("[data-cron-custom-field]").hidden=!custom;
-        const expression=custom?cronForm.querySelector("[data-cron-custom]").value.trim():[cronPartExpression("minute",60),cronPartExpression("hour",24),cronPartExpression("monthday",31),cronPartExpression("month",12),cronPartExpression("weekday",7)].join(" ");
-        cronForm.querySelector("[data-cron-schedule]").value=expression;
-        cronForm.querySelector("[data-cron-schedule-preview]").textContent=expression||cronText.incomplete;
-        cronForm.querySelector("[data-cron-day-warning]").hidden=custom||selectedCronValues("monthday").length===0||selectedCronValues("weekday").length===0;
+        cronScheduleField.value=[cronPartExpression("minute",60),cronPartExpression("hour",24),cronPartExpression("monthday",31),cronPartExpression("month",12),cronPartExpression("weekday",7)].join(" ");
+        cronScheduleField.setCustomValidity("");
+        updateCronWarning();
     };
     const setCronExpression = (expression) => {
         if (!cronForm) return;
         cronForm.querySelectorAll("[data-cron-part]").forEach((field)=>{field.checked=false;});
-        const fields=expression.trim().split(/\s+/), limits=[60,24,31,12,7]; let visual=fields.length===5;
-        fields.forEach((field,index)=>{if(!visual)return;if(field==="*")return;if(!/^\d+(?:,\d+)*$/.test(field)){visual=false;return;}const values=field.split(",").map(Number);if(values.some((value)=>value<(index===2||index===3?1:0)||value>(index===0?59:index===1?23:index===2?31:index===3?12:6))){visual=false;return;}values.forEach((value)=>{const choice=cronForm.querySelector(`[data-cron-part="${cronParts[index]}"][value="${value}"]`);if(choice)choice.checked=true;});});
-        cronForm.querySelector("[data-cron-mode]").value=visual?"visual":"custom";
-        cronForm.querySelector("[data-cron-custom]").value=expression;
-        updateCronSchedule();
+        const fields=expression.trim().split(/\s+/), parsed=[];
+        const bounds=[[0,59],[0,23],[1,31],[1,12],[0,6]];
+        let visual=fields.length===5;
+        fields.forEach((field,index)=>{
+            if (!visual) return;
+            if (field==="*") { parsed.push([]); return; }
+            if (!/^\d+(?:,\d+)*$/.test(field)) { visual=false; return; }
+            const values=field.split(",").map(Number);
+            if (values.some((value)=>value<bounds[index][0]||value>bounds[index][1])) { visual=false; return; }
+            parsed.push(values);
+        });
+        if (visual) parsed.forEach((values,index)=>values.forEach((value)=>{
+            const choice=cronForm.querySelector(`[data-cron-part="${cronParts[index]}"][value="${value}"]`);
+            if (choice) choice.checked=true;
+        }));
+        cronForm.querySelectorAll("[data-cron-part]").forEach((field)=>{field.disabled=!visual;});
+        cronForm.querySelectorAll("[data-cron-clear]").forEach((button)=>{button.disabled=!visual;});
+        cronForm.querySelector("[data-cron-visual-help]").hidden=visual;
+        cronForm.querySelector("[data-cron-day-warning]").hidden=!visual;
+        if (visual) updateCronWarning();
+        cronScheduleField.setCustomValidity("");
     };
     const openCronForm = (mode, data={}) => {
         if (!cronDialog||!cronForm) return;
@@ -400,7 +416,8 @@
         cronForm.querySelector("[data-cron-user]").disabled=editing;
         let hiddenUser=cronForm.querySelector('[data-cron-edit-user-hidden]');if(hiddenUser)hiddenUser.remove();if(editing){hiddenUser=document.createElement("input");hiddenUser.type="hidden";hiddenUser.name="user";hiddenUser.value=data.user;hiddenUser.dataset.cronEditUserHidden="";cronForm.appendChild(hiddenUser);}
         cronForm.querySelector("[data-cron-command]").value=data.command||"";
-        setCronExpression(data.schedule||"0 2 * * *"); cronDialog.showModal();
+        cronScheduleField.value=data.schedule||"0 2 * * *";
+        setCronExpression(cronScheduleField.value); cronDialog.showModal();
     };
     document.querySelectorAll("[data-cron-action]").forEach((select) => {
         select.addEventListener("change", () => {
@@ -422,11 +439,17 @@
             form.submit();
         });
     });
-    cronForm?.querySelectorAll("select,input").forEach((field)=>field.addEventListener("input",updateCronSchedule));
+    cronForm?.querySelectorAll("[data-cron-part]").forEach((field)=>field.addEventListener("change",updateCronSchedule));
+    cronScheduleField?.addEventListener("input",()=>setCronExpression(cronScheduleField.value));
     cronForm?.querySelectorAll("[data-cron-clear]").forEach((button)=>button.addEventListener("click",()=>{cronForm.querySelectorAll(`[data-cron-part="${button.dataset.cronClear}"]`).forEach((field)=>{field.checked=false;});updateCronSchedule();}));
     document.querySelector("[data-cron-create-open]")?.addEventListener("click",()=>openCronForm("create"));
     cronDialog?.querySelector("[data-cron-create-close]")?.addEventListener("click",()=>cronDialog.close());
-    cronForm?.addEventListener("submit",(event)=>{updateCronSchedule();if(!cronForm.querySelector("[data-cron-schedule]").value){event.preventDefault();}});
+    cronForm?.addEventListener("submit",(event)=>{
+        const expression=cronScheduleField.value.trim();
+        const valid=/^@(reboot|yearly|annually|monthly|weekly|daily|midnight|hourly)$/.test(expression)||expression.split(/\s+/).length===5;
+        cronScheduleField.setCustomValidity(valid?"":cronText.incomplete);
+        if (!valid) { event.preventDefault(); cronScheduleField.reportValidity(); }
+    });
 
     const backupDialog = document.querySelector("[data-backup-dialog]");
     const backupDefaults = {mysql:cronText.mysql,apache:cronText.apache,sites:cronText.sites};

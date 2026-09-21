@@ -2,6 +2,24 @@
 
 [Historique détaillé en français](CHANGELOG.fr.md)
 
+## 0.2.93
+
+- Align the contents of the five Cron schedule cards to the top and give their
+  clear buttons one compact, consistent size.
+
+## 0.2.92
+
+- The Cron task dialog uses a compact five-column schedule grid on large
+  screens, with responsive fallback and scrolling confined to long value lists.
+
+## 0.2.91
+
+- Cron task creation and editing use a single editable expression field
+  synchronized with the schedule checkboxes; the mode selector and duplicate
+  generated-expression preview were removed.
+- Expressions that cannot be represented by checkboxes remain unchanged while
+  the checkboxes are disabled until the expression becomes representable.
+
 ## 0.2.90
 
 - The Logs backend reports the total number of lines in the selected file,
