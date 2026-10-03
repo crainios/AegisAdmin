@@ -78,6 +78,11 @@ done
     || fail "Les droits de l’exécuteur de mises à jour ne sont pas 0750."
 [[ "$(stat -c '%a' "${ROOT}/usr/libexec/aegisadmin/aegisadmin-backup")" == 750 ]] \
     || fail "Les droits de l’exécuteur de sauvegarde ne sont pas 0750."
+grep -q 'os.initgroups(account.pw_name, account.pw_gid)' \
+    "${ROOT}/usr/libexec/aegisadmin/cron-runner.py" && \
+! grep -q 'os.setgroups(\[\])' \
+    "${ROOT}/usr/libexec/aegisadmin/cron-runner.py" \
+    || fail "L’exécuteur Cron ne conserve pas les groupes secondaires du compte cible."
 grep -q 'mysql-setup' "${ROOT}/usr/bin/aegisadmin" \
     || fail "La commande de configuration MySQL est absente du lanceur principal."
 grep -q 'setup-status' "${ROOT}/usr/bin/aegisadmin" && \

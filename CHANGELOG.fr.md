@@ -1,5 +1,9 @@
 # Journal des versions
 
+## 0.2.94
+
+- Les tâches Cron lancées à la demande retrouvent désormais les groupes secondaires du compte Unix cible, notamment le groupe `adm` nécessaire à la lecture autorisée des journaux Apache.
+
 ## 0.2.93
 
 - Le contenu des cinq cartes de périodicité Cron est aligné en haut et leurs boutons « Tout effacer » ont une taille compacte uniforme.

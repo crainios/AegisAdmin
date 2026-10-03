@@ -1,0 +1,227 @@
+<article class="aegisadmin-installation-guide">
+  <p><strong>This guide explains how to install AegisAdmin from its official APT repository and perform the initial checks on a test machine.</strong></p>
+
+  <section>
+    <h2>Before you begin</h2>
+    <p><strong>AegisAdmin manages sensitive server components.</strong> For an initial trial, use a virtual machine or test server with a restorable backup, and retain independent SSH access.</p>
+    <ul>
+      <li>Do not begin on a production server.</li>
+      <li>Use an account authorised to run <code>sudo</code>.</li>
+      <li>Keep a recent snapshot or backup of the machine.</li>
+      <li>Never disable APT signature verification.</li>
+      <li>Do not install a key whose fingerprint differs from the one published below.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>1. Check the machine</h2>
+    <p>The currently published release is intended for Debian or Ubuntu systems using systemd, APT and the <code>amd64</code> architecture. Apache is optional and is never installed automatically by AegisAdmin.</p>
+    <pre><code>dpkg --print-architecture
+ps -p 1 -o comm=</code></pre>
+    <p>Expected results:</p>
+    <pre><code>amd64
+systemd</code></pre>
+    <p>Install the tools required to download and verify the key:</p>
+    <pre><code>sudo apt update
+sudo apt install ca-certificates gnupg wget</code></pre>
+  </section>
+
+  <section>
+    <h2>2. Download the official public key</h2>
+    <p>First download the key to a temporary file without installing it:</p>
+    <pre><code>wget --https-only \
+    --output-document=/tmp/aegisadmin-archive-keyring.gpg \
+    https://packages.aegisadmin.fr/aegisadmin-archive-keyring.gpg</code></pre>
+    <p>Display its identity and fingerprints:</p>
+    <pre><code>gpg --show-keys --with-fingerprint \
+    /tmp/aegisadmin-archive-keyring.gpg</code></pre>
+    <p>Expected identity:</p>
+    <pre><code>AegisAdmin Archive &lt;packages@aegisadmin.fr&gt;</code></pre>
+    <p>Official primary key fingerprint:</p>
+    <pre><code>D01E 7409 36E2 CB6E 7BA8  76F9 C103 5511 5D7F 97DB</code></pre>
+    <p>Initial signing subkey:</p>
+    <pre><code>591B 7C62 F74D 090D 3B2C  E8EF CA15 4A9B 3734 C7A1</code></pre>
+    <p>You can obtain the primary fingerprint without spaces:</p>
+    <pre><code>gpg --show-keys --with-colons --fingerprint \
+    /tmp/aegisadmin-archive-keyring.gpg \
+    | awk -F: '$1 == "fpr" { print $10; exit }'</code></pre>
+    <p>The command must display exactly:</p>
+    <pre><code>D01E740936E2CB6E7BA876F9C10355115D7F97DB</code></pre>
+    <p><strong>Stop the installation immediately if the fingerprint differs.</strong></p>
+  </section>
+
+  <section>
+    <h2>3. Install the key and configure the APT repository</h2>
+    <p>Install the public key in the keyring reserved for AegisAdmin:</p>
+    <pre><code>sudo install -o root -g root -m 0644 \
+    /tmp/aegisadmin-archive-keyring.gpg \
+    /usr/share/keyrings/aegisadmin-archive-keyring.gpg</code></pre>
+    <p>Download the repository declaration and inspect it:</p>
+    <pre><code>wget --https-only \
+    --output-document=/tmp/aegisadmin.sources \
+    https://packages.aegisadmin.fr/aegisadmin.sources
+
+cat /tmp/aegisadmin.sources</code></pre>
+    <p>Expected content:</p>
+    <pre><code>Types: deb
+URIs: https://packages.aegisadmin.fr
+Suites: stable
+Components: main
+Architectures: amd64
+Signed-By: /usr/share/keyrings/aegisadmin-archive-keyring.gpg</code></pre>
+    <p>Then install this declaration:</p>
+    <pre><code>sudo install -o root -g root -m 0644 \
+    /tmp/aegisadmin.sources \
+    /etc/apt/sources.list.d/aegisadmin.sources</code></pre>
+    <p>The <code>Signed-By</code> directive limits the trust granted to this key to the AegisAdmin repository alone. Do not use <code>apt-key</code>, <code>trusted=yes</code>, or any option that ignores a signature error.</p>
+  </section>
+
+  <section>
+    <h2>4. Check the proposed package</h2>
+    <p>Refresh the indexes, then check the origin and candidate version:</p>
+    <pre><code>sudo apt update
+apt policy aegisadmin</code></pre>
+    <p>The candidate version must come from:</p>
+    <pre><code>https://packages.aegisadmin.fr stable/main amd64 Packages</code></pre>
+    <p>APT successively verifies the signature of the <code>InRelease</code> file, the index checksums, and the checksum of the downloaded package. Any signature, validity date, or checksum error must stop the installation.</p>
+    <p>To download the package without installing it and inspect its information:</p>
+    <pre><code>cd /tmp
+apt download aegisadmin
+dpkg-deb --info aegisadmin_*_amd64.deb</code></pre>
+    <p>The <code>Package</code> field must be <code>aegisadmin</code>, the architecture must be <code>amd64</code>, and the maintainer must be <code>AegisAdmin &lt;packages@aegisadmin.fr&gt;</code>.</p>
+  </section>
+
+  <section>
+    <h2>5. Install AegisAdmin</h2>
+    <p>Start the installation from the signed repository:</p>
+    <pre><code>sudo apt install aegisadmin</code></pre>
+    <p>The package installs, among other things:</p>
+    <ul>
+      <li>the unprivileged Go web server;</li>
+      <li>the privileged Go system backend;</li>
+      <li>the corresponding systemd services;</li>
+      <li>direct Go HTTPS listening on <code>8443</code> without Apache, or an Apache proxy to <code>127.0.0.1:9080</code> when Apache is present;</li>
+      <li>a local TLS key pair and an SQLite database;</li>
+      <li>the migrations and administration tools.</li>
+    </ul>
+    <p>At the end of the installation, a message should indicate that the services have been restarted. If an error occurs, consult the diagnostics section before running the installation again.</p>
+  </section>
+
+  <section>
+    <h2>6. Initialise the administrator account</h2>
+    <p>This operation is required only for a genuinely new installation:</p>
+    <pre><code>sudo aegisadmin initialize</code></pre>
+    <p>The tool asks for the default language (<code>fr</code> or <code>en</code>), first name, last name, email address, password, and password confirmation. This language controls the sign-in screen; each user can subsequently choose their own language under <strong>My Account</strong>. The password must contain between 12 and 72 characters. Typed characters are represented by <code>#</code> symbols.</p>
+    <p>The sign-in username is always:</p>
+    <pre><code>root</code></pre>
+    <p>The first name, last name, and email address do not replace this username. Do not run the initialisation again if the tool indicates that the root account already exists.</p>
+    <p>When MySQL or MariaDB is active, the same process configures the dedicated monitoring account. You can resume this step with:</p>
+    <pre><code>sudo aegisadmin mysql-setup</code></pre>
+    <p>The SQL administrator password is entered without being displayed and is not stored by AegisAdmin.</p>
+  </section>
+
+  <section>
+    <h2>7. Check that the system is working</h2>
+    <pre><code>sudo systemctl status \
+    aegisadmin-system.service \
+    aegisadmin-web.service \
+    --no-pager -l
+
+sudo aegisadmin version</code></pre>
+    <p>With Apache, check <code>apache2.service</code> and the <code>https://127.0.0.1:9080/readyz</code> probe separately. Without Apache, use <code>https://127.0.0.1:8443/readyz</code>. Both AegisAdmin services must be active. The probe must return a response in this form:</p>
+    <pre><code>{"status":"ok","version":"VERSION","backend":"ok","database":"ok"}</code></pre>
+    <p>With Apache, port <code>9080</code> is used by the Go server for local listening and must not be exposed to the Internet. Without Apache, Go listens directly on the dedicated port <code>8443</code>.</p>
+  </section>
+
+  <section>
+    <h2>8. Open the interface for the first time</h2>
+    <p>The package provides dedicated HTTPS access, served directly by Go without Apache or through the dedicated VirtualHost when Apache is present:</p>
+    <pre><code>https://SERVER_IP_ADDRESS:8443/</code></pre>
+    <p>Check that the server is listening on this port:</p>
+    <pre><code>sudo ss -ltnp | grep ':8443'</code></pre>
+    <p>The firewall is not modified automatically. If the port is filtered, allow only the test address or network using the firewall tool already in use on the machine.</p>
+    <p>The initial certificate is local and is not signed by a public certificate authority. The browser will therefore normally display a warning. Before accepting it, display its fingerprint directly on the server:</p>
+    <pre><code>sudo openssl x509 \
+    -in /etc/aegisadmin-system/tls/admin-local.crt \
+    -noout -sha256 -fingerprint</code></pre>
+    <p>Compare this fingerprint with the one presented by the browser, then sign in with the username <code>root</code> and the password defined previously.</p>
+  </section>
+
+  <section>
+    <h2>9. Recommended initial checks</h2>
+    <p>Begin with read-only operations:</p>
+    <ol>
+      <li>check the dashboard and resource refresh;</li>
+      <li>open Processes, Storage, Services, Network, and Logs;</li>
+      <li>check Apache, Fail2ban, Firewall, Cron, and TLS Certificates;</li>
+      <li>check Updates, Users, Modules, Settings, and Server Configuration;</li>
+      <li>test all four themes, French, English, and a narrow screen width;</li>
+      <li>create a backup under <strong>Settings &gt; Database Backup</strong>.</li>
+    </ol>
+    <p>Test modification operations only after creating a backup or snapshot of the machine.</p>
+  </section>
+
+  <section>
+    <h2>10. Install subsequent versions</h2>
+    <pre><code>sudo apt update
+apt policy aegisadmin
+sudo apt install aegisadmin</code></pre>
+    <p>The database, backups, snapshots, local configurations, and TLS key pair are retained during a normal upgrade.</p>
+  </section>
+
+  <section>
+    <h2>11. Quick diagnostics</h2>
+    <p>If the interface does not respond:</p>
+    <pre><code>sudo journalctl -u aegisadmin-system.service -n 100 --no-pager -l
+sudo journalctl -u aegisadmin-web.service -n 100 --no-pager -l
+sudo ss -ltnp | grep -E ':8443|:9080'</code></pre>
+    <p>If Apache is installed, also run <code>sudo journalctl -u apache2.service -n 100 --no-pager -l</code> and <code>sudo apache2ctl configtest</code>.</p>
+    <p>Check the following in this order:</p>
+    <ol>
+      <li><code>aegisadmin-system.service</code>;</li>
+      <li>the <code>/run/aegisadmin-system/backend.sock</code> socket;</li>
+      <li><code>aegisadmin-web.service</code>;</li>
+      <li>the local probe appropriate for the installation mode;</li>
+      <li>direct Go listening on <code>8443</code>, or Apache in front of <code>9080</code>;</li>
+      <li>the firewall and network routing.</li>
+    </ol>
+    <p>Never start the AegisAdmin web server manually as root.</p>
+  </section>
+
+  <section>
+    <h2>12. Recover the root account</h2>
+    <p>To replace the root password:</p>
+    <pre><code>sudo /usr/libexec/aegisadmin/aegisadmin-admin reset-root-password
+sudo systemctl restart aegisadmin-web.service</code></pre>
+    <p>To disable two-factor authentication after losing the TOTP generator:</p>
+    <pre><code>sudo /usr/libexec/aegisadmin/aegisadmin-admin disable-root-two-factor
+sudo systemctl restart aegisadmin-web.service</code></pre>
+    <p>These operations invalidate existing root sessions.</p>
+  </section>
+
+  <section>
+    <h2>13. Uninstall AegisAdmin from a test machine</h2>
+    <p>Removing the package intentionally preserves the data:</p>
+    <pre><code>sudo apt remove aegisadmin</code></pre>
+    <p>Purging also removes the Debian configurations and local TLS key pair, but retains the database, its backups, and the snapshots:</p>
+    <pre><code>sudo apt purge aegisadmin</code></pre>
+    <p>Delete any remaining data manually only after confirming that it has been backed up, and only on a machine whose destruction is authorised.</p>
+  </section>
+
+  <section>
+    <h2>14. Report an issue</h2>
+    <p>Without transmitting any password, private key, TOTP secret, or personal data, include the following information:</p>
+    <pre><code>cat /etc/os-release
+uname -a
+dpkg --print-architecture
+sudo aegisadmin version
+apt policy aegisadmin</code></pre>
+    <p>Also provide the steps required to reproduce the problem, the expected result, the observed result, and only the log excerpts needed for diagnosis.</p>
+  </section>
+
+  <footer>
+    <p>Official website: <a href="https://en.aegisadmin.fr/">en.aegisadmin.fr</a><br>
+    Package repository: <a href="https://packages.aegisadmin.fr/">packages.aegisadmin.fr</a><br>
+    Source code: <a href="https://github.com/crainios/AegisAdmin" rel="noopener noreferrer">GitHub</a></p>
+  </footer>
+</article>

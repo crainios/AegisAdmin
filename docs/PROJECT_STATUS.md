@@ -1,6 +1,6 @@
 # État du projet AegisAdmin
 
-Dernière mise à jour : 21 septembre 2026 — version 0.2.93.
+Dernière mise à jour : 27 septembre 2026 — version 0.2.94.
 
 ## Statut
 
@@ -299,3 +299,8 @@ interne des longues listes de valeurs lorsque nécessaire.
 
 La version 0.2.93 aligne le contenu de ces cinq cartes en haut et uniformise
 leurs boutons « Tout effacer » au format compact.
+
+La version 0.2.94 restaure les groupes secondaires du compte Unix cible avant
+l’exécution manuelle d’une tâche Cron. Une tâche exécutée comme `www-data`
+conserve ainsi, par exemple, son appartenance au groupe `adm` et les accès aux
+journaux système que l’administrateur lui a explicitement accordés.

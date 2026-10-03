@@ -178,7 +178,7 @@ def child_identity(user: str) -> tuple[pwd.struct_passwd, str]:
 
 
 def drop_privileges(account: pwd.struct_passwd) -> None:
-    os.setgroups([])
+    os.initgroups(account.pw_name, account.pw_gid)
     os.setgid(account.pw_gid)
     os.setuid(account.pw_uid)
 

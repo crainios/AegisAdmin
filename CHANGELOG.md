@@ -2,6 +2,12 @@
 
 [Historique détaillé en français](CHANGELOG.fr.md)
 
+## 0.2.94
+
+- Cron tasks started on demand now inherit the target Unix account's
+  supplementary groups, allowing legitimate group-based access such as an
+  `adm` member reading Apache logs.
+
 ## 0.2.93
 
 - Align the contents of the five Cron schedule cards to the top and give their
